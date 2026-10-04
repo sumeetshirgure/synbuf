@@ -1,7 +1,8 @@
 """Light per-code retuning of Relay-BP memory strengths (gamma0, gamma distribution interval).
 
 Relay-BP's published parameters were tuned for the gross code [[144,12,12]]. For each BB code we
-evaluate a small grid at a physical error rate where the code's LER is measurable, using the
+evaluate a small grid (by default 4 gamma0 values x 3 intervals; a reduced grid can be given on the
+command line, which was used for the two largest codes because of cost) at a physical error rate where the code's LER is measurable, using the
 deployed-style leg budget (300 legs, stop_nconv=1), and keep the configuration with the lowest LER
 (ties broken by mean iterations). Writes results/relay_params.json and results/relay_tuning.csv.
 """
@@ -28,12 +29,26 @@ TUNE = {  # code: (p, shots)
 GAMMA0 = [0.05, 0.125, 0.2, 0.3]
 INTERVALS = [(-0.24, 0.66), (-0.12, 0.5), (-0.36, 0.8)]
 
-codes = sys.argv[1:] or list(TUNE)
+import argparse
+
+ap = argparse.ArgumentParser()
+ap.add_argument("codes", nargs="*", default=list(TUNE))
+ap.add_argument("--gamma0", type=float, nargs="+", default=GAMMA0)
+ap.add_argument("--interval", type=float, nargs=2, action="append", default=None,
+                help="gamma distribution interval (repeatable); default: the full grid")
+ap.add_argument("--p", type=float, default=None, help="override the tuning error rate")
+ap.add_argument("--shots", type=int, default=None, help="override the number of shots")
+args = ap.parse_args()
+codes = args.codes
+GAMMA0 = args.gamma0
+INTERVALS = [tuple(iv) for iv in args.interval] if args.interval else INTERVALS
 os.makedirs("results", exist_ok=True)
 rows = []
 best = json.load(open("results/relay_params.json")) if os.path.exists("results/relay_params.json") else {}
 for code in codes:
     p, N = TUNE[code]
+    p = args.p if args.p is not None else p
+    N = args.shots if args.shots is not None else N
     dem = bb_memory_circuit(BB_CODES[code], p).detector_error_model()
     det, obs, _ = dem.compile_sampler(seed=12345).sample(N)
     det = det.astype(np.uint8)
@@ -56,6 +71,8 @@ for code in codes:
     json.dump(best, open("results/relay_params.json", "w"), indent=1)
 
 write_header = not os.path.exists("results/relay_tuning.csv")
+if not rows:
+    sys.exit(0)
 with open("results/relay_tuning.csv", "a", newline="") as f:
     w = csv.DictWriter(f, fieldnames=list(rows[0]))
     if write_header:
