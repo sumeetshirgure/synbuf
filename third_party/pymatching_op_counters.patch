@@ -1,0 +1,162 @@
+diff --git a/src/pymatching/sparse_blossom/driver/mwpm_decoding.cc b/src/pymatching/sparse_blossom/driver/mwpm_decoding.cc
+index 3f08c37..599fb62 100644
+--- a/src/pymatching/sparse_blossom/driver/mwpm_decoding.cc
++++ b/src/pymatching/sparse_blossom/driver/mwpm_decoding.cc
+@@ -13,6 +13,7 @@
+ // limitations under the License.
+ 
+ #include "pymatching/sparse_blossom/driver/mwpm_decoding.h"
++#include "pymatching/sparse_blossom/op_counters.h"
+ 
+ #include "pymatching/sparse_blossom/driver/user_graph.h"
+ 
+@@ -149,8 +150,10 @@ pm::MatchingResult shatter_blossoms_for_all_detection_events_and_extract_obs_mas
+     pm::Mwpm& mwpm, const std::vector<uint64_t>& detection_events) {
+     pm::MatchingResult res;
+     for (auto& i : detection_events) {
+-        if (mwpm.flooder.graph.nodes[i].region_that_arrived)
++        if (mwpm.flooder.graph.nodes[i].region_that_arrived) {
++            pm::op_counters().shatter_ops++;
+             res += mwpm.shatter_blossom_and_extract_matches(mwpm.flooder.graph.nodes[i].region_that_arrived_top);
++        }
+     }
+     return res;
+ }
+diff --git a/src/pymatching/sparse_blossom/driver/user_graph.pybind.cc b/src/pymatching/sparse_blossom/driver/user_graph.pybind.cc
+index 7b227e5..f0066e2 100644
+--- a/src/pymatching/sparse_blossom/driver/user_graph.pybind.cc
++++ b/src/pymatching/sparse_blossom/driver/user_graph.pybind.cc
+@@ -17,6 +17,7 @@
+ #include "pybind11/pybind11.h"
+ #include "pymatching/sparse_blossom/driver/mwpm_decoding.h"
+ #include "pymatching/sparse_blossom/driver/user_graph.h"
++#include "pymatching/sparse_blossom/op_counters.h"
+ #include "stim.h"
+ 
+ using namespace py::literals;
+@@ -338,6 +339,55 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
+         "bit_packed_shots"_a = false,
+         "bit_packed_predictions"_a = false,
+         "enable_correlations"_a = false);
++    g.def(
++        "decode_batch_with_op_counts",
++        [](pm::UserGraph &self, const py::array_t<uint8_t> &shots) {
++            // synbuf: decode bit-packed shots, returning bit-packed predictions and per-shot op counters.
++            if (shots.ndim() != 2)
++                throw std::invalid_argument("`shots` array should have two dimensions");
++            size_t cols_min = (self.get_num_detectors() + 7) >> 3;
++            if ((size_t)shots.shape(1) < cols_min)
++                throw std::invalid_argument("bit-packed shots have too few columns");
++            size_t num_obs = self.get_num_observables();
++            size_t num_observable_bytes = (num_obs + 7) >> 3;
++            py::ssize_t n = shots.shape(0);
++            py::array_t<uint8_t> predictions = py::array_t<uint8_t>(n * num_observable_bytes);
++            predictions[py::make_tuple(py::ellipsis())] = 0;
++            uint8_t *predictions_ptr = (uint8_t *)predictions.request().ptr;
++            py::array_t<uint64_t> counts = py::array_t<uint64_t>(n * 5);
++            uint64_t *cp = (uint64_t *)counts.request().ptr;
++            auto &mwpm = self.get_mwpm();
++            std::vector<uint64_t> detection_events;
++            std::vector<uint8_t> temp_predictions(num_obs);
++            auto s = shots.unchecked<2>();
++            for (py::ssize_t i = 0; i < n; i++) {
++                for (py::ssize_t j = 0; j < s.shape(1); j++) {
++                    uint8_t b = s(i, j);
++                    if (!b) continue;
++                    size_t bit_offset = j << 3;
++                    for (size_t r = 0; r < 8; r++)
++                        if (b & (1 << r))
++                            detection_events.push_back(bit_offset + r);
++                }
++                pm::op_counters().reset();
++                pm::total_weight_int w = 0;
++                std::fill(temp_predictions.begin(), temp_predictions.end(), 0);
++                pm::decode_detection_events(mwpm, detection_events, temp_predictions.data(), w, false);
++                for (size_t k = 0; k < num_obs; k++)
++                    predictions_ptr[num_observable_bytes * i + (k >> 3)] ^= (temp_predictions[k] << (k % 8));
++                auto &c = pm::op_counters();
++                cp[5 * i + 0] = c.pq_pops;
++                cp[5 * i + 1] = c.flood_events;
++                cp[5 * i + 2] = c.mwpm_events;
++                cp[5 * i + 3] = c.node_reschedules;
++                cp[5 * i + 4] = c.shatter_ops;
++                detection_events.clear();
++            }
++            predictions.resize({n, (py::ssize_t)num_observable_bytes});
++            counts.resize({n, (py::ssize_t)5});
++            return py::make_tuple(predictions, counts);
++        },
++        "shots"_a);
+     g.def(
+         "decode_to_matched_detection_events_dict",
+         [](pm::UserGraph &self, const py::array_t<uint64_t> &detection_events) {
+diff --git a/src/pymatching/sparse_blossom/flooder/graph_flooder.cc b/src/pymatching/sparse_blossom/flooder/graph_flooder.cc
+index 9bf2afd..f0bc3f5 100644
+--- a/src/pymatching/sparse_blossom/flooder/graph_flooder.cc
++++ b/src/pymatching/sparse_blossom/flooder/graph_flooder.cc
+@@ -13,6 +13,7 @@
+ // limitations under the License.
+ 
+ #include "pymatching/sparse_blossom/flooder/graph_flooder.h"
++#include "pymatching/sparse_blossom/op_counters.h"
+ 
+ #include "pymatching/sparse_blossom/flooder/graph.h"
+ #include "pymatching/sparse_blossom/flooder/graph_fill_region.h"
+@@ -127,6 +128,7 @@ std::pair<size_t, cumulative_time_int> GraphFlooder::find_next_event_at_node_ret
+ }
+ 
+ void GraphFlooder::reschedule_events_at_detector_node(DetectorNode &detector_node) {
++    op_counters().node_reschedules++;
+     auto x = find_next_event_at_node_returning_neighbor_index_and_time(detector_node);
+     if (x.first == SIZE_MAX) {
+         detector_node.node_event_tracker.set_no_desired_event();
+@@ -271,6 +273,7 @@ bool GraphFlooder::dequeue_decision(FloodCheckEvent ev) {
+ FloodCheckEvent GraphFlooder::dequeue_valid() {
+     while (true) {
+         FloodCheckEvent ev = queue.dequeue();
++        op_counters().pq_pops++;
+         if (dequeue_decision(ev)) {
+             return ev;
+         }
+@@ -369,8 +372,10 @@ MwpmEvent GraphFlooder::run_until_next_mwpm_notification() {
+         if (tentative_event.tentative_event_type == NO_FLOOD_CHECK_EVENT) {
+             return MwpmEvent::no_event();
+         }
++        op_counters().flood_events++;
+         MwpmEvent notification = process_tentative_event_returning_mwpm_event(tentative_event);
+         if (notification.event_type != NO_EVENT) {
++            op_counters().mwpm_events++;
+             return notification;
+         }
+     }
+diff --git a/src/pymatching/sparse_blossom/op_counters.h b/src/pymatching/sparse_blossom/op_counters.h
+new file mode 100644
+index 0000000..a708744
+--- /dev/null
++++ b/src/pymatching/sparse_blossom/op_counters.h
+@@ -0,0 +1,25 @@
++// synbuf instrumentation: elementary-operation counters for Sparse Blossom.
++#ifndef PYMATCHING2_OP_COUNTERS_H
++#define PYMATCHING2_OP_COUNTERS_H
++
++#include <cstdint>
++
++namespace pm {
++
++struct OpCounters {
++    uint64_t pq_pops = 0;          // every priority-queue dequeue (incl. stale/invalidated events)
++    uint64_t flood_events = 0;     // valid tentative flooder events processed
++    uint64_t mwpm_events = 0;      // notifications handed to the matcher (region/boundary hits, blossom ops)
++    uint64_t node_reschedules = 0; // detector-node rescheduling operations (region growth/shrink/blossom bookkeeping)
++    uint64_t shatter_ops = 0;      // match-extraction work (blossom shattering calls)
++    void reset() { *this = OpCounters(); }
++};
++
++inline OpCounters &op_counters() {
++    static thread_local OpCounters c;
++    return c;
++}
++
++}  // namespace pm
++
++#endif

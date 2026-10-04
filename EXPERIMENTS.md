@@ -25,7 +25,6 @@ How large depends almost entirely on the **tail class** of the decoder's work di
 | $F_c$ | Event: logical failure of the window with cap $c$ (an aborted decode counts as a failure) |
 | $p_L^{(0)} = P(F_\infty)$ | Uncapped logical error rate per window |
 | $P_L(c) = P(F_c)$ | Capped logical error rate per window |
-| $N_{\text{def}}$ | Number of detection events (defects) in the window |
 | $\varepsilon$ | Target total failure probability per window (about $10^{-12}$) |
 | $d,\ p$ | Code distance; physical (circuit-level) error rate |
 
@@ -52,8 +51,8 @@ How large depends almost entirely on the **tail class** of the decoder's work di
 **Goal.** Show that a fixed decoder work budget $c$ creates an LER floor, and that the floor gets *worse* with distance. That makes capping incompatible with scaling to $\varepsilon \approx 10^{-12}$ and motivates the buffer.
 
 ### Setup
-- **Rotated surface code + MWPM:** odd $d$ from 3 up to about 15. Circuit-level noise (uniform depolarizing or SI1000). Several $p$ values below threshold, roughly $10^{-3}$ to $5\times10^{-3}$.
-- **BB codes + Relay-BP:** [[72,12,6]], [[90,8,10]], [[108,8,10]], [[144,12,12]], [[288,12,18]] (optionally coprime BB codes for more points). Use the Bravyi et al. syndrome circuit in Stim and validate LERs against published values first.
+- **Rotated surface code + MWPM:** odd $d$ from 3 up to about 15. Circuit-level noise (uniform depolarizing or SI1000). $p \in \{5\times10^{-4},\ 10^{-3},\ 3\times10^{-3}\}$.
+- **BB codes + Relay-BP:** same $p$ grid as MWPM; [[72,12,6]], [[90,8,10]], [[108,8,10]], [[144,12,12]] (optionally coprime BB codes for more points). Use the Bravyi et al. syndrome circuit in Stim and validate LERs against published values first.
   - Caveat: these codes are not a smooth family; $n$ and $k$ change irregularly with $d$. Use the two $d=10$ codes as a sanity check on structure versus distance.
   - Retune Relay-BP parameters per code. They were tuned for the gross code.
   - Normalize LER per window of the whole block, since $k$ varies.
@@ -64,7 +63,7 @@ How large depends almost entirely on the **tail class** of the decoder's work di
 - **Relay-BP:** total BP iterations summed over legs. Set the leg limit effectively infinite. Report **time to first solution** (stopping after $S=1$ solution) separately from time to collect $S>1$ solutions, because the latter is a design choice, not tail.
 
 ### Procedure
-For every shot, record the tuple $(S,\ N_{\text{def}},\ \mathbb{1}[F_\infty])$, decoding to completion. Then, for any cap $c$, compute offline (no re-decoding needed):
+For every shot, record the pair $(S,\ \mathbb{1}[F_\infty])$, decoding to completion. Then, for any cap $c$, compute offline (no re-decoding needed):
 
 $$P_L(c) = P(F_\infty,\ S \le c) + P(S > c)$$
 
@@ -89,11 +88,11 @@ For Relay-BP, the deployed small iteration and leg limits are one natural value 
 3. **$P(F_\infty \mid S>c)$ vs $c$**: are slow shots the failing shots?
 
 ### Budget
-$10^7$ shots per $(d,p)$ point. Only floors and cutoffs at $10^{-3}$, $10^{-4}$ and $10^{-5}$ are probed. At $10^{-5}$ that still leaves about 100 capped shots per point, enough for a few-percent-to-10% relative error. No importance sampling is needed for this experiment.
+At most $10^6$ shots per $(d,p)$ point, for every setting. Only floors and cutoffs at $10^{-3}$, $10^{-4}$ and $10^{-5}$ are probed. At $10^{-4}$ that leaves about 100 capped shots per point (about 10% relative error); $c_5$ is marginal (about 10 shots at the reference point). No importance sampling is needed for this experiment. Data collection is batch-parallel: shots are split into fixed-size chunks with per-chunk seeds, decoded by $N$ worker processes (`scripts/pipeline.sh N`).
 
 ## 5. Experiment 2: Tail-class characterization
 
-**Goal.** Determine which tail class each decoder's work distribution follows (light, stretched-exponential, lognormal, or Pareto), extract its parameters, and convert them into buffer-size scaling.
+**Goal.** Determine which tail class each decoder's work distribution follows (light, lognormal, or Pareto), extract its parameters, and convert them into buffer-size scaling.
 
 **Data.** Reuse the uncapped Experiment 1 data. No new decoding is required except possibly more shots at a few points.
 
@@ -110,11 +109,10 @@ To leading order (single-big-jump asymptotics for D/G/1; Foss–Korshunov multi-
 | Tail class of $S$ | $P(S>x)$ | Sliding window (D/G/1) buffer | PWD (D/G/k) buffer |
 |---|---|---|---|
 | Light (exponential) | $e^{-\theta x}$ | $\sim \log(1/\varepsilon)$ | $\sim \log(1/\varepsilon)$, smaller constant |
-| Stretched exponential (Weibull, $\beta<1$) | $e^{-(x/\lambda)^\beta}$ | $\sim (\log 1/\varepsilon)^{1/\beta}$ | $\sim (\log(1/\varepsilon)/m)^{1/\beta}$ |
 | Lognormal $(\mu,\sigma)$ | $\bar\Phi\big((\ln x-\mu)/\sigma\big)$ | $e^{\mu+\sigma\sqrt{2\ln(1/\varepsilon)}}$ | $e^{\mu+\sigma\sqrt{2\ln(1/\varepsilon)/m}}$ |
 | Pareto (index $\alpha>1$) | $(x/x_0)^{-\alpha}$ | $\sim \varepsilon^{-1/(\alpha-1)}$ | $\sim \varepsilon^{-1/(m(\alpha-1))}$ |
 
-Here $\bar\Phi$ is the standard normal survival function, and $\theta, \lambda, \beta, \mu, \sigma, x_0, \alpha$ are the fitted parameters of each class.
+Here $\bar\Phi$ is the standard normal survival function, and $\theta, \mu, \sigma, x_0, \alpha$ are the fitted parameters of each class.
 
 Takeaways:
 - **The load barely matters.** The factor $\rho/(1-\rho)$ shifts $\ln x$ only slightly. Overflow comes from one huge decode, not gradual buildup, so overprovisioning throughput does not fix a heavy tail.
@@ -127,30 +125,16 @@ For each $(d,p)$, apply the diagnostics below to the empirical complementary CDF
 | Diagnostic | Straight line indicates |
 |---|---|
 | $\log \bar F$ vs $x$ | exponential |
-| $\log(-\log \bar F)$ vs $\log x$ | Weibull; the slope gives $\beta$ |
 | Normal Q–Q plot of $\log S$ | lognormal |
 | $\log \bar F$ vs $\log x$ | Pareto; the slope gives $-\alpha$ |
 
-The **mean excess function** $e(u) = E[S-u \mid S>u]$ discriminates further:
-- constant → exponential
-- growing like $u^{1-\beta}$ → Weibull
-- growing like about $u/\ln u$ → lognormal
-- linear → Pareto
-
 ### Fitting and model selection
-- **Peaks over threshold.** Fit a generalized Pareto distribution above a high threshold $u$. A shape $\xi>0$ indicates a Pareto-type tail; $\xi \approx 0$ indicates the Gumbel domain (exponential, Weibull, lognormal).
-- **Hill estimator** for $\alpha$, if $\xi>0$.
+- **Peaks over threshold.** Fit a generalized Pareto distribution above a high threshold $u$. A shape $\xi>0$ indicates a Pareto-type tail; $\xi \approx 0$ indicates the Gumbel domain (exponential, lognormal).
 - **MLE fits** of each candidate on the tail above $u$, compared with likelihood-ratio (Vuong) tests in the style of Clauset–Shalizi–Newman. Report all fits, not just the winner.
 - **Censoring.** If any decodes hit the (relaxed) Relay-BP limit, use a censored likelihood. Better still, raise the limit until the censored fraction is far below the tail probabilities being fitted.
 
-### Physics check (cheap and important)
-Plot $S$ against $N_{\text{def}}$.
-- If $S \approx f(N_{\text{def}})$ for some polynomial $f$, the tail of $S$ is inherited from the defect-count distribution. That distribution is Poisson-binomial, computable exactly from the detector error model down to $10^{-12}$ and beyond. The tail is then stretched-exponential rather than lognormal, which moves the decoder up a row in the table.
-- In that case, combine the conditional $P(S \mid N_{\text{def}})$ with the exact $P(N_{\text{def}})$ to reach $\varepsilon$ without importance sampling.
-- **Expectation:** MWPM is likely to be close to a function of $N_{\text{def}}$. BP is likely *not*, because iteration counts are governed by trapping-set dynamics (see Landa, arXiv:2603.19126).
-
 ### Hypotheses
-- **MWPM:** a lognormal fit has been reported (and observed by us) on the bulk. The true far tail may be lighter (stretched exponential) if the defect-count check holds.
+- **MWPM:** a lognormal fit has been reported (and observed by us) on the bulk; whether it holds in the far tail is the question.
 - **Relay-BP:** BP non-convergence behaves like escape from traps, with escape time roughly geometric given trap depth. Mixing over trap depths can produce a **power-law (Pareto)** tail. Relay's leg structure may lighten it if legs act as nearly independent restarts. Evidence of long tails in BP-family iteration counts: Wang–Li–Mueller (HPCA'26, BP-SF), Landa (IBM), and the beam-search decoder paper (arXiv:2512.07057), which notes BP-LSD tails about 100× the mean.
 
 ### Outputs
@@ -160,7 +144,7 @@ Plot $S$ against $N_{\text{def}}$.
 ## 6. Conclusions the letter is set up to draw
 
 - Capping at any practical work budget produces an LER floor that grows with $d$, so uncapped decoding plus a buffer is required.
-- **MWPM:** if lognormal, the sliding-window buffer scales as $e^{\sigma\sqrt{2\ln(1/\varepsilon)}}$, and PWD with out-of-order release shrinks it by $\sqrt{m}$ in the exponent. That is likely necessary to keep the buffer manageable. If stretched-exponential, the buffer is polylogarithmic.
+- **MWPM:** if lognormal, the sliding-window buffer scales as $e^{\sigma\sqrt{2\ln(1/\varepsilon)}}$, and PWD with out-of-order release shrinks it by $\sqrt{m}$ in the exponent. That is likely necessary to keep the buffer manageable.
 - **Relay-BP:**
   - light-tailed → buffer $\sim \log(1/\varepsilon)$, a significant positive result;
   - lognormal → same conclusion as MWPM;

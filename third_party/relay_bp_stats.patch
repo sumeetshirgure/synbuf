@@ -1,0 +1,174 @@
+diff --git a/crates/relay_bp/src/bp/relay.rs b/crates/relay_bp/src/bp/relay.rs
+index 20237a8..9be5c2c 100644
+--- a/crates/relay_bp/src/bp/relay.rs
++++ b/crates/relay_bp/src/bp/relay.rs
+@@ -10,7 +10,7 @@
+ 
+ use super::min_sum::{MinSumBPDecoder, MinSumDecoderConfig};
+ use crate::decoder::{Bit, SparseBitMatrix};
+-use crate::decoder::{DecodeResult, Decoder, DecoderRunner};
++use crate::decoder::{BPExtraResult, DecodeResult, Decoder, DecoderRunner};
+ use log::debug;
+ 
+ use ndarray::{Array1, Array2, ArrayView1};
+@@ -299,8 +299,12 @@ where
+             self.sets_conv[0] = result.success;
+         }
+ 
++        let mut first_conv_iterations: Option<usize> = None;
++        let mut first_decoding: Option<Array1<Bit>> = None;
+         // Check early stopping criteria
+         if result.success {
++            first_conv_iterations = Some(result.iterations);
++            first_decoding = Some(result.decoding.clone());
+             num_conv += 1;
+             min_pm = result.decoding_quality;
+             num_sets_best += 1;
+@@ -326,6 +330,11 @@ where
+                         .unwrap();
+                     self.write_log(file);
+                 }
++                result.extra = BPExtraResult::Relay {
++                    first_conv_iterations: result.iterations,
++                    num_legs: 1,
++                    first_decoding,
++                };
+                 return result;
+             }
+         }
+@@ -344,6 +353,10 @@ where
+             self.num_executed_sets += 1;
+             total_iterations += temp_result.iterations;
+             if temp_result.success {
++                if first_conv_iterations.is_none() {
++                    first_conv_iterations = Some(total_iterations);
++                    first_decoding = Some(temp_result.decoding.clone());
++                }
+                 num_conv += 1;
+                 let pm = temp_result.decoding_quality;
+                 if self.relay_config.logging {
+@@ -370,6 +383,11 @@ where
+             }
+         }
+         result.iterations = total_iterations;
++        result.extra = BPExtraResult::Relay {
++            first_conv_iterations: first_conv_iterations.unwrap_or(total_iterations),
++            num_legs: self.num_executed_sets,
++            first_decoding,
++        };
+ 
+         // Rest of the function is just logging
+         if self.relay_config.logging {
+diff --git a/crates/relay_bp/src/decoder.rs b/crates/relay_bp/src/decoder.rs
+index e2c576f..87fec27 100644
+--- a/crates/relay_bp/src/decoder.rs
++++ b/crates/relay_bp/src/decoder.rs
+@@ -218,4 +218,14 @@ pub struct DecodeResult {
+ #[derive(Serialize, Deserialize, Debug, Clone)]
+ pub enum BPExtraResult {
+     None,
++    /// synbuf instrumentation: Relay-BP leg statistics.
++    Relay {
++        /// Total BP iterations (summed over legs) up to and including the first converged leg.
++        /// Equal to the total iteration count if no leg converged.
++        first_conv_iterations: usize,
++        /// Number of legs executed (including the initial pre-iteration leg).
++        num_legs: usize,
++        /// Decoding of the first converged leg (None if no leg converged).
++        first_decoding: Option<Array1<Bit>>,
++    },
+ }
+diff --git a/crates/relay_bp/src/observable_decoder.rs b/crates/relay_bp/src/observable_decoder.rs
+index 9b46ef4..e3a1133 100644
+--- a/crates/relay_bp/src/observable_decoder.rs
++++ b/crates/relay_bp/src/observable_decoder.rs
+@@ -85,6 +85,63 @@ impl<'a> ObservableDecoderRunner<'a> {
+         }
+     }
+ 
++    /// synbuf instrumentation: per-shot statistics row
++    /// [converged, total_iterations, first_conv_iterations, num_legs, obs_best_mask, obs_first_mask]
++    /// Observable masks are bit-packed into a u64 (requires <= 64 observables).
++    pub fn decode_stats(&mut self, detectors: ArrayView1<Bit>) -> Array1<u64> {
++        let r = self.decode_detailed(detectors.view());
++        let pack = |obs: &Array1<Bit>| -> u64 {
++            let mut m: u64 = 0;
++            for (i, b) in obs.iter().enumerate() {
++                if *b != 0 {
++                    m |= 1u64 << i;
++                }
++            }
++            m
++        };
++        let obs_best = pack(&self.compute_observables(r.decoding.view()));
++        let (first_it, legs, obs_first) = match &r.extra {
++            crate::decoder::BPExtraResult::Relay {
++                first_conv_iterations,
++                num_legs,
++                first_decoding,
++            } => (
++                *first_conv_iterations as u64,
++                *num_legs as u64,
++                match first_decoding {
++                    Some(fd) => pack(&self.compute_observables(fd.view())),
++                    None => obs_best,
++                },
++            ),
++            _ => (r.iterations as u64, 1u64, obs_best),
++        };
++        Array1::from(vec![
++            r.success as u64,
++            r.iterations as u64,
++            first_it,
++            legs,
++            obs_best,
++            obs_first,
++        ])
++    }
++
++    pub fn par_decode_stats_batch(&mut self, detectors: ArrayView2<Bit>) -> Array2<u64> {
++        let arrs: Vec<Array1<u64>> = detectors
++            .axis_iter(Axis(0))
++            .into_par_iter()
++            .map_init(|| self.clone(), |decoder, row| decoder.decode_stats(row))
++            .collect();
++        stack(Axis(0), &arrs.iter().map(|a| a.view()).collect::<Vec<_>>()).unwrap()
++    }
++
++    pub fn decode_stats_batch(&mut self, detectors: ArrayView2<Bit>) -> Array2<u64> {
++        let arrs: Vec<Array1<u64>> = detectors
++            .axis_iter(Axis(0))
++            .map(|row| self.decode_stats(row))
++            .collect();
++        stack(Axis(0), &arrs.iter().map(|a| a.view()).collect::<Vec<_>>()).unwrap()
++    }
++
+     pub fn decode_observables_batch(&mut self, detectors: ArrayView2<Bit>) -> Array2<Bit> {
+         let arrs: Vec<Array1<Bit>> = detectors
+             .axis_iter(Axis(0))
+diff --git a/crates/relay_bp_py/src/observable_decoder.rs b/crates/relay_bp_py/src/observable_decoder.rs
+index 4d743a8..3e50581 100644
+--- a/crates/relay_bp_py/src/observable_decoder.rs
++++ b/crates/relay_bp_py/src/observable_decoder.rs
+@@ -156,6 +156,21 @@ impl ObservableDecoderRunner {
+         )
+     }
+ 
++    #[pyo3(signature = (detectors, parallel=false))]
++    pub fn decode_stats_batch<'py>(
++        &mut self,
++        py: Python<'py>,
++        detectors: PyReadonlyArray2<'_, Bit>,
++        parallel: bool,
++    ) -> Bound<'py, PyArray2<u64>> {
++        let results = if parallel {
++            self.inner.par_decode_stats_batch(detectors.as_array())
++        } else {
++            self.inner.decode_stats_batch(detectors.as_array())
++        };
++        results.into_pyarray(py)
++    }
++
+     #[pyo3(signature = (detectors, parallel=false, progress_bar=true, leave_progress_bar_on_finish=false))]
+     pub fn decode_batch<'py>(
+         &mut self,
