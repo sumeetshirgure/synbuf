@@ -1,0 +1,18 @@
+{
+  "pymatching": {
+    "repo": "https://github.com/oscarhiggott/PyMatching",
+    "commit": "6f63b2b9474ba0fa7e511fe52bffdce858a06984",
+    "patch": "third_party/pymatching_op_counters.patch"
+  },
+  "relay_bp": {
+    "repo": "https://github.com/trmue/relay",
+    "commit": "d185194ba0cb4101ced4340d82b2ee6d42f225f0",
+    "patch": "third_party/relay_bp_stats.patch"
+  },
+  "pybind11": {
+    "repo": "https://github.com/pybind/pybind11",
+    "tag": "v2.13.6",
+    "commit": "a2e59f0e7065404b44dfe92a28aca47ba1378dc4",
+    "patch": null
+  }
+}
