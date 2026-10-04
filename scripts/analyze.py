@@ -121,14 +121,14 @@ def fig_ler_vs_d(pts, caps, rows, family, title, ps=None, xlabels=None):
         pL0 = np.array([pts[k]["fail"].mean() for k in keys])
         lo = np.array([exp1.wilson(int(pts[k]["fail"].sum()), len(pts[k]["fail"]))[0] for k in keys])
         hi = np.array([exp1.wilson(int(pts[k]["fail"].sum()), len(pts[k]["fail"]))[1] for k in keys])
-        ax.errorbar(xs, np.where(pL0 > 0, pL0, np.nan), yerr=[pL0 - lo, hi - pL0], fmt="k--o", ms=3,
+        ax.errorbar(xs, np.where(pL0 > 0, pL0, np.nan), yerr=[np.maximum(pL0 - lo, 0), np.maximum(hi - pL0, 0)], fmt="k--o", ms=3,
                     label=r"uncapped $p_L^{(0)}$", capsize=2)
         for cname, c in caps.items():
             r = [next(x for x in rows if x["key"] == str(k) and x["cap"] == cname) for k in keys]
             y = np.array([x["PL"] for x in r])
             yl = np.array([x["PL_ci"][0] for x in r])
             yh = np.array([x["PL_ci"][1] for x in r])
-            ax.errorbar(xs, y, yerr=[y - yl, yh - y], fmt="-o", ms=3, capsize=2, color=capcol.get(cname),
+            ax.errorbar(xs, y, yerr=[np.maximum(y - yl, 0), np.maximum(yh - y, 0)], fmt="-o", ms=3, capsize=2, color=capcol.get(cname),
                         label=f"$P_L(c)$, {cname}={c:.0f}")
         ax.set_yscale("log")
         ax.set_title(f"{title}, p={p:g}")
@@ -578,7 +578,7 @@ def fig_param_trends(tail_rows):
                 xs = [BB_CODES[r["point"].strip("[]").replace(",", "_")].n for r in rr]
             lab = f"{'MWPM' if fam == 'mwpm' else 'Relay'} p={p:g}"
             axes[0].errorbar(xs, [r["xi"] for r in rr],
-                             yerr=[[r["xi"] - r["xi_lo"] for r in rr], [r["xi_hi"] - r["xi"] for r in rr]],
+                             yerr=[[max(r["xi"] - r["xi_lo"], 0) for r in rr], [max(r["xi_hi"] - r["xi"], 0) for r in rr]],
                              fmt=mk, ms=3, capsize=2, label=lab)
             axes[1].plot(xs, [r.get("lognormal_sigma", np.nan) for r in rr], mk, ms=3, label=lab)
             axes[2].plot(xs, [r.get("weibull_beta", np.nan) for r in rr], mk, ms=3, label=lab)
