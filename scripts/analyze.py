@@ -521,7 +521,7 @@ def main():
     for k in [(15, 0.003), (11, 0.003), (15, 0.005), (15, 0.001)]:
         if k in mw:
             sel.append(("mwpm", k, mw[k], lambda k=k: surface_code_circuit(k[0], k[1]), f"MWPM surface d={k[0]} p={k[1]:g}"))
-    for k in [("144_12_12", 0.003), ("288_12_18", 0.003), ("72_12_6", 0.003), ("144_12_12", 0.002), ("144_12_12", 0.004)]:
+    for k in [("144_12_12", 0.003), ("288_12_18", 0.003), ("90_8_10", 0.003), ("72_12_6", 0.003), ("144_12_12", 0.002)]:
         if k in bb:
             sel.append(("relay", k, bb[k], lambda k=k: bb_memory_circuit(BB_CODES[k[0]], k[1]),
                         f"Relay-BP [[{k[0].replace('_', ',')}]] p={k[1]:g}"))
@@ -576,6 +576,7 @@ def main():
     if s_vs_n:
         fig_s_vs_n(s_vs_n, "exp2_S_vs_Ndef.png", "Physics check: work vs number of detection events")
 
+    nconv5_analysis(bb)
     fig_param_trends(tail_rows)
     fig_buffers(buffers)
 
@@ -603,6 +604,41 @@ def main():
         fig_lindley(lind)
     dump({k: (v if not isinstance(v, dict) else {kk: (str(vv) if isinstance(vv, tuple) else vv) for kk, vv in v.items()})
           for k, v in summary.items()}, "summary.json")
+
+
+def nconv5_analysis(bb1):
+    """Time to first solution (S_1) vs time to collect 5 solutions (S_5), same shots, stop_nconv=5."""
+    b5 = load_bb("_nconv5")
+    if not b5:
+        return
+    out = {}
+    fig, axes = plt.subplots(1, len(b5), figsize=(4.0 * len(b5), 3.2), squeeze=False)
+    for ax, (key, P) in zip(axes[0], sorted(b5.items())):
+        S1, S5 = P["S"].astype(float), P["S_total"].astype(float)
+        r = dict(n=len(S1), ler_best_of_5=float(P["fail"].mean()), ler_first=float(P["fail_first"].mean()),
+                 censored=int((~P["conv"]).sum()), mean_S1=float(S1.mean()), mean_S5=float(S5.mean()),
+                 median_S1=float(np.median(S1)), median_S5=float(np.median(S5)),
+                 q_S1={f"1e-{j}": float(tails.quantile_tail(S1, 10.0 ** -j)) for j in (1, 2, 3, 4) if 10.0 ** -j * len(S1) >= 5},
+                 q_S5={f"1e-{j}": float(tails.quantile_tail(S5, 10.0 ** -j)) for j in (1, 2, 3, 4) if 10.0 ** -j * len(S5) >= 5})
+        if key in bb1:
+            r["ler_nconv1_main_run"] = float(bb1[key]["fail"].mean())
+        ta5 = tails.analyze_tail(S5, tail_frac=max(1e-2, 1000 / len(S5)), censored_at=P["cens_at"])
+        r["S5_gpd"] = ta5.get("gpd")
+        r["S5_best_aic"] = ta5.get("best_aic")
+        r["S5_pareto_alpha"] = ta5.get("fits", {}).get("pareto", {}).get("params", {}).get("alpha")
+        out[str(key)] = r
+        for S, lab in [(S1, "S_1: first solution"), (S5, "S_5: 5 solutions (stop_nconv=5)")]:
+            x, sf = tails.survival(S)
+            ok = sf > 0
+            ax.loglog(x[ok], sf[ok], ".", ms=2, label=lab)
+        ax.set_title(f"Relay-BP {P['label']} p={P['p']:g}", fontsize=8)
+        ax.set_xlabel("BP iterations")
+        ax.set_ylabel("P(S > x)")
+        ax.legend(fontsize=6.5)
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIG, "exp2_relay_S1_vs_S5.png"))
+    plt.close(fig)
+    dump(out, "exp2_relay_nconv5.json")
 
 
 def fig_param_trends(tail_rows):
