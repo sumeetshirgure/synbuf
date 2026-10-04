@@ -35,27 +35,6 @@ def quantile_tail(S, q):
     return S[n - k - 1]
 
 
-def mean_excess(S, us):
-    S = np.asarray(S, dtype=np.float64)
-    out = []
-    for u in us:
-        e = S[S > u]
-        out.append((e - u).mean() if len(e) else np.nan)
-    return np.array(out)
-
-
-def hill(S, ks):
-    """Hill estimator of the tail index alpha using the top-k order statistics."""
-    Xs = np.sort(np.asarray(S, dtype=np.float64))[::-1]
-    out = []
-    for k in ks:
-        if k + 1 >= len(Xs) or Xs[k] <= 0:
-            out.append(np.nan)
-            continue
-        out.append(1.0 / np.mean(np.log(Xs[:k]) - np.log(Xs[k])))
-    return np.array(out)
-
-
 # ------------------------------------------------------------------ truncated models
 # Each model: logpdf(x, *theta) and logsf(x, *theta) of the *untruncated* distribution,
 # parameter transforms to an unconstrained space, and a starting point.
@@ -68,18 +47,6 @@ def _exp_logpdf(x, th):
 def _exp_logsf(x, th):
     (lt,) = th
     return -np.exp(lt) * x
-
-
-def _weib_logpdf(x, th):
-    ll, lb = th
-    lam, b = np.exp(ll), np.exp(lb)
-    z = x / lam
-    return lb - ll + (b - 1) * np.log(z) - z ** b
-
-
-def _weib_logsf(x, th):
-    ll, lb = th
-    return -(x / np.exp(ll)) ** np.exp(lb)
 
 
 def _ln_logpdf(x, th):
@@ -107,7 +74,6 @@ def _par_logsf(x, th):
 
 MODELS = {
     "exponential": (_exp_logpdf, _exp_logsf),
-    "weibull": (_weib_logpdf, _weib_logsf),
     "lognormal": (_ln_logpdf, _ln_logsf),
     "pareto": (_par_logpdf, _par_logsf),
 }
@@ -117,8 +83,6 @@ def _start(name, x, u):
     lx = np.log(x)
     if name == "exponential":
         return [np.log(1.0 / max(np.mean(x - u), 1e-9))]
-    if name == "weibull":
-        return [np.log(np.mean(x)), np.log(0.7)]
     if name == "lognormal":
         return [np.mean(lx), np.log(max(np.std(lx), 0.05))]
     if name == "pareto":
@@ -145,8 +109,6 @@ def fit_truncated(name, x, u, n_cens=0, c_cens=None):
         return v
     best = None
     starts = [_start(name, x, u)]
-    if name == "weibull":
-        starts += [[np.log(u), np.log(b)] for b in (0.3, 0.5, 1.0, 2.0)]
     if name == "lognormal":
         starts += [[np.log(u) - k, np.log(s)] for k in (0, 2, 5) for s in (0.3, 1.0, 2.0)]
     for s0 in starts:
@@ -163,8 +125,6 @@ def fit_truncated(name, x, u, n_cens=0, c_cens=None):
 def named_params(name, th):
     if name == "exponential":
         return dict(theta=float(np.exp(th[0])))
-    if name == "weibull":
-        return dict(lam=float(np.exp(th[0])), beta=float(np.exp(th[1])))
     if name == "lognormal":
         return dict(mu=float(th[0]), sigma=float(np.exp(th[1])))
     if name == "pareto":
@@ -209,9 +169,6 @@ def model_sf(name, params, x, u, pu):
     x = np.asarray(x, dtype=np.float64)
     if name == "exponential":
         r = np.exp(-params["theta"] * (x - u))
-    elif name == "weibull":
-        lam, b = params["lam"], params["beta"]
-        r = np.exp(-((x / lam) ** b) + (u / lam) ** b)
     elif name == "lognormal":
         mu, s = params["mu"], params["sigma"]
         r = np.exp(special.log_ndtr(-(np.log(x) - mu) / s) - special.log_ndtr(-(np.log(u) - mu) / s))
@@ -228,9 +185,6 @@ def model_isf(name, params, eps, u, pu):
     lq = np.log(q)
     if name == "exponential":
         return u - lq / params["theta"]
-    if name == "weibull":
-        lam, b = params["lam"], params["beta"]
-        return lam * ((u / lam) ** b - lq) ** (1 / b)
     if name == "lognormal":
         mu, s = params["mu"], params["sigma"]
         base = special.log_ndtr(-(np.log(u) - mu) / s)

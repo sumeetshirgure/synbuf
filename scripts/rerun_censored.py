@@ -39,8 +39,7 @@ for f in sorted(glob.glob(os.path.join(outdir, "part_*.npz"))):
     if not len(bad):
         continue
     n = len(conv)
-    det, obs, *_ = dem.compile_sampler(seed=seed * 1_000_003 + ci + 1).sample(n, bit_packed=True,
-                                                                              return_errors=ci * a.chunk < 200_000)
+    det, obs, _ = dem.compile_sampler(seed=seed * 1_000_003 + ci + 1).sample(n, bit_packed=True)
     det_u = np.unpackbits(det, axis=1, count=dem.num_detectors, bitorder="little")
     obs_u = np.unpackbits(obs, axis=1, count=dem.num_observables, bitorder="little")
     for b in bad:

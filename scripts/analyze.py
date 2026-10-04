@@ -22,18 +22,17 @@ from scipy import stats  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from synbuf import buffer as buf  # noqa: E402
-from synbuf import exp1, physics, tails  # noqa: E402
-from synbuf.circuits import BB_CODES, bb_memory_circuit, surface_code_circuit  # noqa: E402
+from synbuf import exp1, tails  # noqa: E402
+from synbuf.circuits import BB_CODES  # noqa: E402
 from synbuf.run_relay import load as load_relay  # noqa: E402
 
 RES, FIG = "results", "figures"
-NERR_MISSING = np.iinfo(np.uint16).max
 os.makedirs(RES, exist_ok=True)
 os.makedirs(FIG, exist_ok=True)
 EPS_GRID = np.logspace(-6, -15, 10)
-MODEL_NAMES = ["exponential", "weibull", "lognormal", "pareto"]
-COLORS = {"exponential": "#1f77b4", "weibull": "#2ca02c", "lognormal": "#d62728", "pareto": "#9467bd",
-          "gpd": "#ff7f0e", "physics": "black"}
+MODEL_NAMES = ["exponential", "lognormal", "pareto"]
+COLORS = {"exponential": "#1f77b4", "lognormal": "#d62728", "pareto": "#9467bd",
+          "gpd": "#ff7f0e"}
 plt.rcParams.update({"font.size": 9, "figure.dpi": 130, "axes.grid": True, "grid.alpha": 0.3})
 
 
@@ -60,7 +59,7 @@ def load_mwpm():
         m = re.search(r"d(\d+)_p([0-9.e-]+)\.npz", f)
         d, p = int(m.group(1)), float(m.group(2))
         z = np.load(f)
-        pts[(d, p)] = dict(S=z["S"], pq=z["pq"], fail=z["fail"], ndef=z["ndef"], nerr=z["nerr"],
+        pts[(d, p)] = dict(S=z["S"], pq=z["pq"], fail=z["fail"],
                            label=f"surface d={d}", d=d, p=p, decoder="MWPM")
     return pts
 
@@ -80,7 +79,7 @@ def load_bb(tag=""):
             cens_at = meta["pre_iter"] + meta["num_sets"] * meta["set_max_iter"]
             pts[(code, p)] = dict(S=r["it_first"], S_total=r["it_total"], fail=r["fail"],
                                   fail_first=r["fail_first"], conv=r["conv"], legs=r["legs"],
-                                  ndef=r["ndef"], nerr=r["nerr"], meta=meta, cens_at=cens_at,
+                                  meta=meta, cens_at=cens_at,
                                   label=f"[[{code.replace('_', ',')}]]", d=BB_CODES[code].d, p=p,
                                   decoder="Relay-BP", code=code)
     return pts
@@ -237,11 +236,6 @@ def tail_analysis(P, tail_frac):
     out["max"] = float(S.max())
     out["q"] = {f"1e-{j}": float(tails.quantile_tail(S, 10.0 ** -j)) for j in range(1, 8)
                 if 10.0 ** -j * len(S) >= 1}
-    xi = out.get("gpd", {}).get("xi")
-    out["hill_alpha"] = [float(a) for a in tails.hill(S, [100, 300, 1000, 3000])]
-    out["ve_ndef"] = physics.variance_explained(S, P["ndef"])
-    mk = P["nerr"] != NERR_MISSING
-    out["ve_nerr"] = physics.variance_explained(S[mk], P["nerr"][mk])
     out["censored_total"] = int((S >= cens).sum()) if cens else 0
     return out
 
@@ -309,7 +303,7 @@ def _buffer_rows(sf_tail, S, u, rho, ms, isf=None):
     return rows
 
 
-def buffer_table(P, ta, rho=0.5, ms=(1, 2, 3), phys=None):
+def buffer_table(P, ta, rho=0.5, ms=(1, 2, 3)):
     """Buffer requirements from each fitted tail model, spliced onto the empirical bulk below u.
 
     x_m1: D/G/1 (sliding window), solves rho/(1-rho) * Fbar_I(x) = eps   (Veraverbeke)
@@ -331,46 +325,21 @@ def buffer_table(P, ta, rho=0.5, ms=(1, 2, 3), phys=None):
         isf = lambda e, name=name, params=params: tails.model_isf(name, params, e, u, pu)
         rows = _buffer_rows(sf, S, u, rho, ms, isf=isf)
         out[name] = rows if rows is not None else dict(note="integrated tail diverges")
-    if phys is not None:
-        ub = float(np.quantile(S, 0.5))
-        sfp = lambda x: float(physics.physics_tail(phys["model"], phys["pmf"], [x])[0])
-        out["physics"] = _buffer_rows(sfp, S, ub, rho, ms)
     return out
 
 
-def physics_extrapolation(P, circ_fn, nmax_extra=6.0):
-    """Conditional-lognormal S|N_err model combined with the exact Poisson-binomial P(N_err)."""
-    dem = circ_fn().detector_error_model()
-    probs = physics.dem_error_probs(dem)
-    mean_n = probs.sum()
-    nmax = int(mean_n + nmax_extra * 10 * np.sqrt(mean_n) + 60)
-    pmf = physics.poisson_binomial_pmf(probs, nmax=nmax)
-    mk = P["nerr"] != NERR_MISSING
-    # The product-model decomposition is fit on the shots with recorded N_err; the tail of Y uses
-    # the shots with N_err recorded (>= 1e6), the threshold adapted to keep >= 2000 exceedances.
-    nm = int(mk.sum())
-    model = physics.fit_product_model(P["S"][mk], P["nerr"][mk], tail_frac=max(1e-3, 2000 / nm))
-    return dict(model=model, pmf=pmf, mean_nerr=float(mean_n), nmax=nmax)
-
-
-def fig_diagnostics(P, ta, fname, title, phys=None):
+def fig_diagnostics(P, ta, fname, title):
     S = P["S"].astype(np.float64)
     x, sf = tails.survival(S)
     ok = sf > 0
     x, sf = x[ok], sf[ok]
-    fig, axes = plt.subplots(2, 3, figsize=(10, 5.8))
-    ax = axes[0, 0]
+    fig, axes = plt.subplots(1, 3, figsize=(10, 3.0))
+    ax = axes[0]
     ax.semilogy(x, sf, "k.", ms=2)
     ax.set_xlabel("S")
     ax.set_ylabel(r"$\bar F(S)$")
     ax.set_title(r"$\log\bar F$ vs $x$ (exponential: line)")
-    ax = axes[0, 1]
-    m = (sf < 1) & (x > 0)
-    ax.plot(np.log(x[m]), np.log(-np.log(sf[m])), "k.", ms=2)
-    ax.set_xlabel(r"$\log S$")
-    ax.set_ylabel(r"$\log(-\log\bar F)$")
-    ax.set_title("Weibull plot (slope = beta)")
-    ax = axes[0, 2]
+    ax = axes[1]
     ax.loglog(x, sf, "k.", ms=2, label="empirical")
     u, pu = ta["u"] + 0.5, ta["pu"]
     xx = np.logspace(np.log10(u), np.log10(x.max() * 30), 200)
@@ -380,7 +349,7 @@ def fig_diagnostics(P, ta, fname, title, phys=None):
     ax.set_xlabel("S")
     ax.set_title(r"$\log\bar F$ vs $\log x$ (Pareto: line) + tail fits")
     ax.legend(fontsize=6)
-    ax = axes[1, 0]
+    ax = axes[2]
     lS = np.log(np.maximum(S, 1))
     sub = np.sort(lS)[:: max(1, len(lS) // 20000)]
     tailpart = np.sort(lS)[-2000:]
@@ -392,46 +361,13 @@ def fig_diagnostics(P, ta, fname, title, phys=None):
     ax.set_xlabel("normal quantile")
     ax.set_ylabel(r"$\log S$")
     ax.set_title(r"normal Q-Q of $\log S$ (lognormal: line)")
-    ax = axes[1, 1]
-    us = np.unique(np.quantile(S, np.r_[np.linspace(0.5, 0.999, 60), 1 - np.logspace(-3, np.log10(50 / n), 30)]))
-    me = tails.mean_excess(S, us)
-    ax.plot(us, me, "k.-", ms=3)
-    ax.set_xlabel("threshold u")
-    ax.set_ylabel(r"$e(u)=E[S-u\mid S>u]$")
-    ax.set_title("mean excess (const: exp; linear: Pareto)")
-    ax = axes[1, 2]
-    ks = np.unique(np.logspace(1, np.log10(min(len(S) // 10, 50000)), 40).astype(int))
-    ax.semilogx(ks, tails.hill(S, ks), "k.-", ms=3)
-    ax.set_xlabel("k (top order statistics)")
-    ax.set_ylabel(r"Hill $\hat\alpha$")
-    ax.set_title("Hill plot")
     fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(os.path.join(FIG, fname))
     plt.close(fig)
 
 
-def fig_s_vs_n(points, fname, title):
-    fig, axes = plt.subplots(1, len(points), figsize=(3.4 * len(points), 3.0), squeeze=False)
-    for ax, (P, lab) in zip(axes[0], points):
-        N = P["ndef"].astype(float)
-        S = np.maximum(P["S"].astype(float), 1)
-        h = ax.hist2d(N, np.log10(S), bins=[min(80, int(N.max()) + 1), 80], cmap="Greys", norm=matplotlib.colors.LogNorm())
-        rows = physics.conditional_stats(S, P["ndef"], min_count=100)
-        ax.plot([r["n"] for r in rows], [np.log10(r["median"]) for r in rows], "r-", lw=1.2, label="median S | N_def")
-        ax.plot([r["n"] for r in rows], [np.log10(r["q99"]) for r in rows], "r--", lw=1, label="99% S | N_def")
-        ve = physics.variance_explained(S, P["ndef"])
-        ax.set_title(f"{lab}\nVar(log S) explained by N_def: {100 * ve:.0f}%", fontsize=8)
-        ax.set_xlabel(r"$N_{def}$")
-        ax.set_ylabel(r"$\log_{10} S$")
-        ax.legend(fontsize=6)
-    fig.suptitle(title, fontsize=9)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIG, fname))
-    plt.close(fig)
-
-
-def fig_extrapolation(P, ta, phys, fname, title):
+def fig_extrapolation(P, ta, fname, title):
     S = P["S"].astype(np.float64)
     x, sf = tails.survival(S)
     ok = sf > 0
@@ -448,10 +384,6 @@ def fig_extrapolation(P, ta, phys, fname, title):
     xx = np.logspace(np.log10(u), np.log10(xmax), 300)
     for name, f in ta["fits"].items():
         ax.loglog(xx, tails.model_sf(name, f["params"], xx, u, pu), color=COLORS[name], lw=1, label=name + " fit")
-    if phys is not None:
-        xp = np.logspace(np.log10(max(np.median(S), 1)), np.log10(xmax), 200)
-        yp = physics.physics_tail(phys["model"], phys["pmf"], xp)
-        ax.loglog(xp, yp, "k--", lw=1.2, label="physics: exact P(N_err) x S|N_err")
     ax.set_ylim(1e-16, 1.5)
     ax.axhline(1e-12, color="gray", lw=0.6, ls=":")
     ax.set_xlabel("S (work units)")
@@ -514,8 +446,7 @@ def main():
                        xi=ta.get("gpd", {}).get("xi"), xi_lo=ta.get("gpd", {}).get("xi_ci", [None, None])[0],
                        xi_hi=ta.get("gpd", {}).get("xi_ci", [None, None])[1],
                        xi_high_u=(ta2.get("gpd") or {}).get("xi"), best_aic_high_u=ta2.get("best_aic"),
-                       ve_ndef=ta["ve_ndef"], ve_nerr=ta["ve_nerr"], censored=ta["censored_total"],
-                       hill_1000=ta["hill_alpha"][2])
+                       censored=ta["censored_total"])
             for name in MODEL_NAMES:
                 if name in ta["fits"]:
                     for pk, pv in ta["fits"][name]["params"].items():
@@ -526,7 +457,7 @@ def main():
                 row[f"vuong_{pair}_p"] = pv
             tail_rows.append(row)
             print(f"[tail] {fam} {P['label']} p={P['p']:g}: best={row['best_aic']} xi={row['xi']:.3f} "
-                  f"(high-u xi={row['xi_high_u']}) VE(N_def)={row['ve_ndef']:.2f}", flush=True)
+                  f"(high-u xi={row['xi_high_u']})", flush=True)
     dump(tail_rows, "exp2_tail_fits.json")
     if tail_rows:
         cols = sorted({k for r in tail_rows for k in r}, key=lambda c: (c not in ("family", "point", "d", "p"), c))
@@ -535,65 +466,23 @@ def main():
             w.writeheader()
             w.writerows(tail_rows)
 
-    # ---------------- diagnostics / physics / extrapolation / buffers for selected points
+    # ---------------- diagnostics / extrapolation / buffers for selected points
     sel = []
-    for k in [(15, 0.003), (11, 0.003), (15, 0.005), (15, 0.001)]:
+    for k in [(15, 0.003), (11, 0.003), (15, 0.001), (15, 0.0005)]:
         if k in mw:
-            sel.append(("mwpm", k, mw[k], lambda k=k: surface_code_circuit(k[0], k[1]), f"MWPM surface d={k[0]} p={k[1]:g}"))
-    for k in [("144_12_12", 0.003), ("288_12_18", 0.003), ("90_8_10", 0.003), ("72_12_6", 0.003), ("144_12_12", 0.002)]:
+            sel.append(("mwpm", k, mw[k], f"MWPM surface d={k[0]} p={k[1]:g}"))
+    for k in [("144_12_12", 0.003), ("108_8_10", 0.003), ("90_8_10", 0.003), ("72_12_6", 0.003), ("144_12_12", 0.001)]:
         if k in bb:
-            sel.append(("relay", k, bb[k], lambda k=k: bb_memory_circuit(BB_CODES[k[0]], k[1]),
-                        f"Relay-BP [[{k[0].replace('_', ',')}]] p={k[1]:g}"))
+            sel.append(("relay", k, bb[k], f"Relay-BP [[{k[0].replace('_', ',')}]] p={k[1]:g}"))
     buffers = {}
-    phys_summary = {}
-    for fam, key, P, circ_fn, title in sel:
+    for fam, key, P, title in sel:
         ta = allta[(fam, key)]
         tag = f"{fam}_{'_'.join(str(x) for x in key)}"
-        phys = None
-        try:
-            phys = physics_extrapolation(P, circ_fn)
-            pm = phys["model"]
-            phys_summary[tag] = dict(a=pm["a"], b=pm["b"], y_best=pm["y_best"], mean_nerr=phys["mean_nerr"],
-                                     y_fits={k: v["params"] for k, v in pm["y_tail"]["fits"].items()},
-                                     y_gpd=pm["y_tail"].get("gpd"), y_vuong=pm["y_tail"]["vuong"],
-                                     independence=pm["independence"])
-            # physics-based quantiles at eps levels
-            xs = np.logspace(0, 10, 500)
-            yp = physics.physics_tail(phys["model"], phys["pmf"], xs)
-            qs = {}
-            for e in EPS_GRID:
-                idx = np.nonzero(yp <= e)[0]
-                qs[f"{e:.0e}"] = float(xs[idx[0]]) if len(idx) else None
-            phys_summary[tag]["x_eps"] = qs
-            # empirical check of the physics model inside the sampled range
-            emp = {}
-            for j in (2, 3, 4, 5, 6):
-                if 10.0 ** -j * len(P["S"]) >= 10:
-                    xq = tails.quantile_tail(P["S"], 10.0 ** -j)
-                    emp[f"1e-{j}"] = dict(x=float(xq), physics_sf=float(physics.physics_tail(phys["model"], phys["pmf"], [xq])[0]))
-            phys_summary[tag]["check"] = emp
-        except Exception as e:
-            print("physics failed", tag, e)
-            phys = None
         fig_diagnostics(P, ta, f"exp2_diag_{tag}.png", title)
-        fig_extrapolation(P, ta, phys, f"exp2_extrap_{tag}.png", title)
+        fig_extrapolation(P, ta, f"exp2_extrap_{tag}.png", title)
         buffers[tag] = dict(title=title, mean=float(P["S"].mean()), median=float(np.median(P["S"])),
-                            best=ta.get("best_aic"), table=buffer_table(P, ta, phys=phys))
-        if phys is not None:
-            # physics-based buffer: quantile route (single big jump)
-            buffers[tag]["physics_x_eps"] = phys_summary[tag]["x_eps"]
+                            best=ta.get("best_aic"), table=buffer_table(P, ta))
     dump(buffers, "exp2_buffers.json")
-    dump(phys_summary, "exp2_physics.json")
-
-    s_vs_n = []
-    if (15, 0.003) in mw:
-        s_vs_n.append((mw[(15, 0.003)], "MWPM surface d=15, p=0.003"))
-    if ("144_12_12", 0.003) in bb:
-        s_vs_n.append((bb[("144_12_12", 0.003)], "Relay-BP [[144,12,12]], p=0.003"))
-    if ("288_12_18", 0.003) in bb:
-        s_vs_n.append((bb[("288_12_18", 0.003)], "Relay-BP [[288,12,18]], p=0.003"))
-    if s_vs_n:
-        fig_s_vs_n(s_vs_n, "exp2_S_vs_Ndef.png", "Physics check: work vs number of detection events")
 
     nconv5_analysis(bb)
     fig_param_trends(tail_rows)
@@ -602,7 +491,7 @@ def main():
     # ---------------- Lindley check (D/G/1) for selected points
     if not a.skip_lindley:
         lind = {}
-        for fam, key, P, circ_fn, title in sel[:1] + [s for s in sel if s[0] == "relay"][:1]:
+        for fam, key, P, title in sel[:1] + [s for s in sel if s[0] == "relay"][:1]:
             S = P["S"].astype(np.float64)
             thr_med = np.array([5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000])
             thr = thr_med * np.median(S)
@@ -663,7 +552,7 @@ def nconv5_analysis(bb1):
 def fig_param_trends(tail_rows):
     if not tail_rows:
         return
-    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.0))
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.0))
     for fam, mk in [("mwpm", "o-"), ("relay", "s-")]:
         rows = [r for r in tail_rows if r["family"] == fam]
         for p in sorted({r["p"] for r in rows}):
@@ -677,11 +566,9 @@ def fig_param_trends(tail_rows):
                              yerr=[[max(r["xi"] - r["xi_lo"], 0) for r in rr], [max(r["xi_hi"] - r["xi"], 0) for r in rr]],
                              fmt=mk, ms=3, capsize=2, label=lab)
             axes[1].plot(xs, [r.get("lognormal_sigma", np.nan) for r in rr], mk, ms=3, label=lab)
-            axes[2].plot(xs, [r.get("weibull_beta", np.nan) for r in rr], mk, ms=3, label=lab)
     axes[0].axhline(0, color="k", lw=0.7)
     axes[0].set_title(r"GPD shape $\xi$ above $u$ ($\xi>0$: Pareto-type)")
     axes[1].set_title(r"lognormal tail fit $\sigma$")
-    axes[2].set_title(r"Weibull tail fit $\beta$")
     for ax in axes:
         ax.set_xlabel("d (MWPM) / n (BB)")
         ax.set_xscale("log")
@@ -706,14 +593,10 @@ def fig_buffers(buffers):
         for m, ls in [(1, "-"), (2, "--"), (3, ":")]:
             ax.loglog(eps, [r[f"med_m{m}"] for r in tbl], "k" + ls,
                       label=f"{'sliding (D/G/1)' if m == 1 else f'PWD m={m}'} [{best}]")
-        for name in ("lognormal", "weibull", "pareto"):
+        for name in ("lognormal", "pareto"):
             t2 = B["table"].get(name)
             if isinstance(t2, list) and name != best:
                 ax.loglog(eps, [r["med_m1"] for r in t2], color=COLORS[name], lw=0.8, label=f"D/G/1 [{name}]")
-        if "physics_x_eps" in B:
-            pe = B["physics_x_eps"]
-            ex = [float(k) for k, v in pe.items() if v]
-            ax.loglog(ex, [v / B["median"] for v in pe.values() if v], "x", color="gray", ms=4, label="physics quantile")
         ax.invert_xaxis()
         ax.set_xlabel(r"target $\varepsilon$")
         ax.set_title(B["title"], fontsize=7.5)

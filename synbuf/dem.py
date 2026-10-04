@@ -50,38 +50,3 @@ def dem_to_matrices(dem: stim.DetectorErrorModel, keep_detectors=None):
     L = sp.csr_matrix((np.ones(len(lr), dtype=np.uint8), (lr, lc)), shape=(dem.num_observables, len(keys)))
     return H, L, priors
 
-
-def poisson_binomial_pmf(probs, nmax=None):
-    """Exact PMF of the number of independent Bernoulli(p_i) events that fire.
-
-    Computed by iterated convolution, truncated at nmax (the truncated tail mass is returned
-    as the last entry's complement, i.e. sum(pmf) <= 1).
-    """
-    probs = np.asarray(probs, dtype=np.float64)
-    if nmax is None:
-        nmax = len(probs)
-    pmf = np.zeros(nmax + 1)
-    pmf[0] = 1.0
-    for p in probs:
-        pmf[1:] = pmf[1:] * (1 - p) + pmf[:-1] * p
-        pmf[0] *= (1 - p)
-    return pmf
-
-
-def z_type_detectors(circuit: stim.Circuit):
-    """Indices of detectors insensitive to every Z error (i.e. Z-check detectors of a CSS circuit)."""
-    noiseless = circuit.without_noise().flattened()
-    probe = stim.Circuit()
-    allq = list(range(circuit.num_qubits))
-    for inst in noiseless:
-        probe.append(inst)
-        if inst.name not in ("DETECTOR", "OBSERVABLE_INCLUDE", "TICK", "QUBIT_COORDS", "SHIFT_COORDS"):
-            probe.append("Z_ERROR", allq, 0.001)
-    dem = probe.detector_error_model(allow_gauge_detectors=True)
-    sensitive = np.zeros(circuit.num_detectors, dtype=bool)
-    for inst in dem.flattened():
-        if inst.type == "error":
-            for t in inst.targets_copy():
-                if t.is_relative_detector_id():
-                    sensitive[t.val] = True
-    return np.nonzero(~sensitive)[0]
