@@ -87,9 +87,28 @@ def load_bb(tag=""):
 
 
 # ------------------------------------------------------------------ Experiment 1
+def _order(k):
+    """Sort points by distance, then block length (BB codes) / key."""
+    if isinstance(k[0], str):
+        c = BB_CODES[k[0]]
+        return (c.d, c.n)
+    return (k[0], 0)
+
+
 def experiment1(pts, ref_key, family, extra_caps=None, xkey="d"):
     S_ref = pts[ref_key]["S"]
     caps = {f"c{j}": float(tails.quantile_tail(S_ref, 10.0 ** -j)) for j in (3, 4, 5)}
+    not_calibratable = {}
+    cens = pts[ref_key].get("cens_at")
+    n_ref = len(S_ref)
+    for j in (3, 4, 5):
+        name = f"c{j}"
+        # a cap needs >= 10 shots above it at the reference point and must lie below any censoring limit
+        if (cens is not None and caps[name] >= cens) or 10.0 ** -j * n_ref < 10:
+            not_calibratable[name] = dict(
+                reason="P(S > c) = 1e-%d is beyond the leg limit or the sample size at the reference point" % j,
+                censored_fraction=float((S_ref >= cens).mean()) if cens else 0.0, n_ref=n_ref)
+            caps.pop(name)
     if extra_caps:
         caps.update(extra_caps)
     rows = []
@@ -98,7 +117,7 @@ def experiment1(pts, ref_key, family, extra_caps=None, xkey="d"):
             st = exp1.cap_stats(P["S"], P["fail"], c)
             rows.append(dict(family=family, point=P["label"], key=str(key), d=P["d"], p=P["p"], cap=cname,
                              **{k: v for k, v in st.items()}))
-    dump(dict(reference=str(ref_key), caps=caps, rows=rows), f"exp1_{family}.json")
+    dump(dict(reference=str(ref_key), caps=caps, not_calibratable=not_calibratable, rows=rows), f"exp1_{family}.json")
     with open(os.path.join(RES, f"exp1_{family}.csv"), "w", newline="") as f:
         cols = ["point", "d", "p", "cap", "c", "n", "pL0", "p_slow", "PL", "dPL", "p_fail_given_slow",
                 "k_slow", "k_fail_slow", "k_fail"]
@@ -114,7 +133,7 @@ def fig_ler_vs_d(pts, caps, rows, family, title, ps=None, xlabels=None):
     fig, axes = plt.subplots(1, len(ps), figsize=(3.3 * len(ps), 3.1), sharey=True, squeeze=False)
     capcol = {"c3": "#d62728", "c4": "#ff7f0e", "c5": "#2ca02c", "deployed": "#9467bd"}
     for ax, p in zip(axes[0], ps):
-        keys = sorted([k for k, P in pts.items() if P["p"] == p], key=lambda k: (pts[k]["d"], str(k)))
+        keys = sorted([k for k, P in pts.items() if P["p"] == p], key=_order)
         if not keys:
             continue
         xs = np.arange(len(keys)) if xlabels else np.array([pts[k]["d"] for k in keys])
@@ -186,7 +205,7 @@ def fig_scaled_caps(pts, rows, family, title, xlabels=None):
     ps = sorted({P["p"] for P in pts.values()})
     fig, axes = plt.subplots(1, len(ps), figsize=(3.3 * len(ps), 3.1), sharey=True, squeeze=False)
     for ax, p in zip(axes[0], ps):
-        keys = sorted([k for k, P in pts.items() if P["p"] == p], key=lambda k: (pts[k]["d"], str(k)))
+        keys = sorted([k for k, P in pts.items() if P["p"] == p], key=_order)
         xs = np.arange(len(keys)) if xlabels else np.array([pts[k]["d"] for k in keys])
         pL0 = np.array([pts[k]["fail"].mean() for k in keys])
         ax.plot(xs, np.where(pL0 > 0, pL0, np.nan), "k--o", ms=3, label=r"uncapped $p_L^{(0)}$")
