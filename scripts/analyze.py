@@ -169,6 +169,44 @@ def fig_PL_vs_c(pts, keys, family, title):
     plt.close(fig)
 
 
+def scaled_cap_rows(pts, family, ks=(3, 5, 8, 12)):
+    """Caps that scale with the typical work: c = k * median(S) at each point."""
+    rows = []
+    for key, P in sorted(pts.items(), key=lambda kv: (kv[1]["p"], kv[1]["d"], str(kv[0]))):
+        med = float(np.median(P["S"]))
+        for k in ks:
+            st = exp1.cap_stats(P["S"], P["fail"], k * med)
+            rows.append(dict(family=family, point=P["label"], key=str(key), d=P["d"], p=P["p"], k=k,
+                             median=med, **st))
+    dump(rows, f"exp1_scaled_caps_{family}.json")
+    return rows
+
+
+def fig_scaled_caps(pts, rows, family, title, xlabels=None):
+    ps = sorted({P["p"] for P in pts.values()})
+    fig, axes = plt.subplots(1, len(ps), figsize=(3.3 * len(ps), 3.1), sharey=True, squeeze=False)
+    for ax, p in zip(axes[0], ps):
+        keys = sorted([k for k, P in pts.items() if P["p"] == p], key=lambda k: (pts[k]["d"], str(k)))
+        xs = np.arange(len(keys)) if xlabels else np.array([pts[k]["d"] for k in keys])
+        pL0 = np.array([pts[k]["fail"].mean() for k in keys])
+        ax.plot(xs, np.where(pL0 > 0, pL0, np.nan), "k--o", ms=3, label=r"uncapped $p_L^{(0)}$")
+        for kk in sorted({r["k"] for r in rows}):
+            y = [next(r for r in rows if r["key"] == str(k) and r["k"] == kk)["PL"] for k in keys]
+            ax.plot(xs, y, "-o", ms=3, label=f"$P_L(c)$, c={kk}x median(S)")
+        ax.set_yscale("log")
+        ax.set_title(f"{title}, p={p:g}")
+        if xlabels:
+            ax.set_xticks(xs)
+            ax.set_xticklabels([xlabels(k) for k in keys], rotation=30, fontsize=7)
+        else:
+            ax.set_xlabel("code distance d")
+    axes[0][0].set_ylabel("logical error rate per window")
+    axes[0][-1].legend(fontsize=6.5)
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIG, f"exp1_scaled_caps_{family}.png"))
+    plt.close(fig)
+
+
 # ------------------------------------------------------------------ Experiment 2
 def tail_analysis(P, tail_frac):
     cens = P.get("cens_at")
@@ -424,6 +462,7 @@ def main():
         fig_ler_vs_d(mw, caps, rows, "mwpm", "MWPM surface code")
         keys = [k for k in [(9, 0.003), (11, 0.003), (13, 0.003), (15, 0.003)] if k in mw]
         fig_PL_vs_c(mw, keys, "mwpm", "MWPM")
+        fig_scaled_caps(mw, scaled_cap_rows(mw, "mwpm"), "mwpm", "MWPM, scaled cap")
 
     if bb:
         ref = ("144_12_12", 0.003) if ("144_12_12", 0.003) in bb else sorted(bb)[0]
@@ -434,6 +473,8 @@ def main():
                      xlabels=lambda k: f"{BB_CODES[k[0]].n},{BB_CODES[k[0]].k},{BB_CODES[k[0]].d}")
         keys = [k for k in sorted(bb, key=lambda k: BB_CODES[k[0]].n) if k[1] == 0.003]
         fig_PL_vs_c(bb, keys, "relay", "Relay-BP")
+        fig_scaled_caps(bb, scaled_cap_rows(bb, "relay"), "relay", "Relay-BP, scaled cap",
+                        xlabels=lambda k: f"{BB_CODES[k[0]].n},{BB_CODES[k[0]].k},{BB_CODES[k[0]].d}")
 
     # ---------------- Experiment 2: tails
     tail_rows = []
