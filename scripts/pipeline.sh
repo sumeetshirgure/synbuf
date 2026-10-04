@@ -18,7 +18,7 @@ mkdir -p logs
 for stage in $STAGES; do
   case "$stage" in
     mwpm)
-      python3 -m synbuf.run_mwpm --d 3 5 7 9 11 13 15 --p $PS --shots $SHOTS --workers "$N" >> logs/mwpm.log 2>&1 ;;
+      python3 -m synbuf.run_mwpm --d 3 7 11 15 --p $PS --shots $SHOTS --workers "$N" >> logs/mwpm.log 2>&1 ;;
     tune)
       [ -f results/relay_params.json ] || python3 scripts/tune_relay.py > logs/tune.log 2>&1 ;;
     relay)

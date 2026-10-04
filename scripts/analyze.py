@@ -118,8 +118,7 @@ def experiment1(pts, ref_key, family, extra_caps=None, xkey="d"):
                              **{k: v for k, v in st.items()}))
     dump(dict(reference=str(ref_key), caps=caps, not_calibratable=not_calibratable, rows=rows), f"exp1_{family}.json")
     with open(os.path.join(RES, f"exp1_{family}.csv"), "w", newline="") as f:
-        cols = ["point", "d", "p", "cap", "c", "n", "pL0", "p_slow", "PL", "dPL", "p_fail_given_slow",
-                "k_slow", "k_fail_slow", "k_fail"]
+        cols = ["point", "d", "p", "cap", "c", "n", "pL0", "p_slow", "PL", "dPL", "k_slow", "k_fail"]
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         for r in rows:
@@ -127,101 +126,69 @@ def experiment1(pts, ref_key, family, extra_caps=None, xkey="d"):
     return caps, rows
 
 
-def fig_ler_vs_d(pts, caps, rows, family, title, ps=None, xlabels=None):
-    ps = sorted({P["p"] for P in pts.values()}) if ps is None else ps
-    fig, axes = plt.subplots(1, len(ps), figsize=(3.3 * len(ps), 3.1), sharey=True, squeeze=False)
-    capcol = {"c3": "#d62728", "c4": "#ff7f0e", "c5": "#2ca02c", "deployed": "#9467bd"}
-    for ax, p in zip(axes[0], ps):
-        keys = sorted([k for k, P in pts.items() if P["p"] == p], key=_order)
-        if not keys:
-            continue
-        xs = np.arange(len(keys)) if xlabels else np.array([pts[k]["d"] for k in keys])
-        pL0 = np.array([pts[k]["fail"].mean() for k in keys])
-        lo = np.array([exp1.wilson(int(pts[k]["fail"].sum()), len(pts[k]["fail"]))[0] for k in keys])
-        hi = np.array([exp1.wilson(int(pts[k]["fail"].sum()), len(pts[k]["fail"]))[1] for k in keys])
-        ax.errorbar(xs, np.where(pL0 > 0, pL0, np.nan), yerr=[np.maximum(pL0 - lo, 0), np.maximum(hi - pL0, 0)], fmt="k--o", ms=3,
-                    label=r"uncapped $p_L^{(0)}$", capsize=2)
-        for cname, c in caps.items():
+def cap_ladder(pts, cens_at=None):
+    """Absolute caps on a 1-2-5 grid, from the smallest median S to the largest S over all points
+    (and below the Relay-BP leg limit). Held fixed while sweeping p."""
+    lo = max(2.0, min(float(np.median(P["S"])) for P in pts.values()))
+    hi = max(float(P["S"].max()) for P in pts.values())
+    if cens_at is not None:
+        hi = min(hi, cens_at - 1)
+    grid = [m * 10.0 ** e for e in range(0, 8) for m in (1, 2, 5)]
+    return {f"c={c:g}": c for c in grid if lo <= c <= hi}
+
+
+def _informative_caps(P_by_p, caps, max_lines=5, min_slow=10, max_frac=0.05):
+    """Caps that bind at some p (>= min_slow capped shots) but cap < max_frac of shots at the lowest p."""
+    ok = []
+    for cname, c in caps.items():
+        slow = [int((P["S"] > c).sum()) for P in P_by_p]
+        frac = [k / len(P["S"]) for k, P in zip(slow, P_by_p)]
+        if max(slow) >= min_slow and min(frac) < max_frac:
+            ok.append(cname)
+    if len(ok) > max_lines:
+        ok = [ok[i] for i in np.unique(np.round(np.linspace(0, len(ok) - 1, max_lines)).astype(int))]
+    return ok
+
+
+def fig_ler_vs_p(pts, caps, rows, family, title, panel_label, always=()):
+    """P_L(c) vs p at fixed (d, c): one panel per code, one line per cap (subset), plus uncapped p_L."""
+    codes = sorted({k[0] for k in pts}, key=lambda c: _order((c, 0)))
+    if family == "mwpm":
+        codes = [c for c in codes if c >= 7]
+    fig, axes = plt.subplots(1, len(codes), figsize=(3.2 * len(codes), 3.9), sharey=True, squeeze=False)
+    for ax, code in zip(axes[0], codes):
+        keys = sorted([k for k in pts if k[0] == code], key=lambda k: k[1])
+        ps = np.array([k[1] for k in keys])
+        Ps = [pts[k] for k in keys]
+        pL0 = np.array([P["fail"].mean() for P in Ps])
+        ci = np.array([exp1.wilson(int(P["fail"].sum()), len(P["fail"])) for P in Ps])
+        ax.errorbar(ps, np.where(pL0 > 0, pL0, np.nan),
+                    yerr=[np.maximum(pL0 - ci[:, 0], 0), np.maximum(ci[:, 1] - pL0, 0)],
+                    fmt="k--o", ms=3, capsize=2, lw=1.2, zorder=5, label="uncapped")
+        ladder = sorted((k for k in caps if k.startswith("c=")), key=lambda k: caps[k])
+        sel = _informative_caps(Ps, {k: caps[k] for k in ladder})
+        sel = sorted(sel + [a for a in always if a in caps], key=lambda k: caps[k])
+        cmap = plt.get_cmap("Blues")
+        for cname in sel:
             r = [next(x for x in rows if x["key"] == str(k) and x["cap"] == cname) for k in keys]
             y = np.array([x["PL"] for x in r])
             yl = np.array([x["PL_ci"][0] for x in r])
             yh = np.array([x["PL_ci"][1] for x in r])
-            ax.errorbar(xs, y, yerr=[np.maximum(y - yl, 0), np.maximum(yh - y, 0)], fmt="-o", ms=3, capsize=2, color=capcol.get(cname),
-                        label=f"$P_L(c)$, {cname}={c:.0f}")
+            # one shade per cap value across all panels: lighter = tighter cap
+            col = "#9467bd" if cname in always else cmap(0.35 + 0.6 * ladder.index(cname) / max(len(ladder) - 1, 1))
+            lab = f"{cname} = {caps[cname]:g}" if cname in always else cname
+            ax.errorbar(ps, np.where(y > 0, y, np.nan), yerr=[np.maximum(y - yl, 0), np.maximum(yh - y, 0)],
+                        fmt="-o", ms=3, capsize=2, lw=1.2, color=col, label=lab)
+        ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_title(f"{title}, p={p:g}")
-        if xlabels:
-            ax.set_xticks(xs)
-            ax.set_xticklabels([xlabels(k) for k in keys], rotation=30, fontsize=7)
-        else:
-            ax.set_xlabel("code distance d")
-    axes[0][0].set_ylabel("logical error rate per window")
-    axes[0][-1].legend(fontsize=6.5, loc="best")
+        ax.set_xticks(ps, [f"{p:g}" for p in ps], minor=False)
+        ax.set_xticks([], minor=True)
+        ax.set_xlabel("physical error rate p")
+        ax.set_title(f"{title}, {panel_label(code)}", fontsize=8)
+        ax.legend(fontsize=6, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3, frameon=False)
+    axes[0][0].set_ylabel(r"$P_L(c)$ per window")
     fig.tight_layout()
-    fig.savefig(os.path.join(FIG, f"exp1_ler_vs_d_{family}.png"))
-    plt.close(fig)
-
-
-def fig_PL_vs_c(pts, keys, family, title):
-    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.0))
-    for k in keys:
-        P = pts[k]
-        S = P["S"]
-        cs = np.unique(np.quantile(S, np.linspace(0.5, 1, 400)))
-        cs = np.unique(np.r_[cs, np.sort(S)[-2000:]])
-        cc = exp1.cap_curve(S, P["fail"], cs)
-        l, = axes[0].loglog(cc["c"], cc["PL"], label=P["label"] + f" p={P['p']:g}")
-        axes[0].axhline(cc["pL0"], color=l.get_color(), ls=":", lw=1)
-        ok = cc["k_slow"] >= 5
-        axes[1].semilogx(cc["c"][ok], cc["p_fail_given_slow"][ok], color=l.get_color())
-    axes[0].set_xlabel("cap c (work units)")
-    axes[0].set_ylabel(r"$P_L(c)$ (dotted: $p_L^{(0)}$)")
-    axes[0].set_title(title + r": $P_L(c)$ vs $c$")
-    axes[1].set_xlabel("cap c (work units)")
-    axes[1].set_ylabel(r"$P(F_\infty \mid S>c)$")
-    axes[1].set_title("are slow shots the failing shots?")
-    axes[1].set_ylim(0, 1)
-    axes[0].legend(fontsize=6.5)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIG, f"exp1_PL_vs_c_{family}.png"))
-    plt.close(fig)
-
-
-def scaled_cap_rows(pts, family, ks=(3, 5, 8, 12)):
-    """Caps that scale with the typical work: c = k * median(S) at each point."""
-    rows = []
-    for key, P in sorted(pts.items(), key=lambda kv: (kv[1]["p"], kv[1]["d"], str(kv[0]))):
-        med = float(np.median(P["S"]))
-        for k in ks:
-            st = exp1.cap_stats(P["S"], P["fail"], k * med)
-            rows.append(dict(family=family, point=P["label"], key=str(key), d=P["d"], p=P["p"], k=k,
-                             median=med, **st))
-    dump(rows, f"exp1_scaled_caps_{family}.json")
-    return rows
-
-
-def fig_scaled_caps(pts, rows, family, title, xlabels=None):
-    ps = sorted({P["p"] for P in pts.values()})
-    fig, axes = plt.subplots(1, len(ps), figsize=(3.3 * len(ps), 3.1), sharey=True, squeeze=False)
-    for ax, p in zip(axes[0], ps):
-        keys = sorted([k for k, P in pts.items() if P["p"] == p], key=_order)
-        xs = np.arange(len(keys)) if xlabels else np.array([pts[k]["d"] for k in keys])
-        pL0 = np.array([pts[k]["fail"].mean() for k in keys])
-        ax.plot(xs, np.where(pL0 > 0, pL0, np.nan), "k--o", ms=3, label=r"uncapped $p_L^{(0)}$")
-        for kk in sorted({r["k"] for r in rows}):
-            y = [next(r for r in rows if r["key"] == str(k) and r["k"] == kk)["PL"] for k in keys]
-            ax.plot(xs, y, "-o", ms=3, label=f"$P_L(c)$, c={kk}x median(S)")
-        ax.set_yscale("log")
-        ax.set_title(f"{title}, p={p:g}")
-        if xlabels:
-            ax.set_xticks(xs)
-            ax.set_xticklabels([xlabels(k) for k in keys], rotation=30, fontsize=7)
-        else:
-            ax.set_xlabel("code distance d")
-    axes[0][0].set_ylabel("logical error rate per window")
-    axes[0][-1].legend(fontsize=6.5)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIG, f"exp1_scaled_caps_{family}.png"))
+    fig.savefig(os.path.join(FIG, f"exp1_ler_vs_p_{family}.png"))
     plt.close(fig)
 
 
@@ -407,25 +374,19 @@ def main():
     print("MWPM points:", len(mw), " BB points:", len(bb))
 
     if mw:
-        ref = (9, 0.003) if (9, 0.003) in mw else sorted(mw)[len(mw) // 2]
-        caps, rows = experiment1(mw, ref, "mwpm")
+        ref = (11, 0.001) if (11, 0.001) in mw else sorted(mw)[len(mw) // 2]
+        caps, rows = experiment1(mw, ref, "mwpm", extra_caps=cap_ladder(mw))
         summary["mwpm_caps"] = dict(reference=ref, caps=caps)
-        fig_ler_vs_d(mw, caps, rows, "mwpm", "MWPM surface code")
-        keys = [k for k in [(9, 0.003), (11, 0.003), (13, 0.003), (15, 0.003)] if k in mw]
-        fig_PL_vs_c(mw, keys, "mwpm", "MWPM")
-        fig_scaled_caps(mw, scaled_cap_rows(mw, "mwpm"), "mwpm", "MWPM, scaled cap")
+        fig_ler_vs_p(mw, caps, rows, "mwpm", "MWPM surface code", lambda d: f"d={d}")
 
     if bb:
         ref = ("144_12_12", 0.003) if ("144_12_12", 0.003) in bb else sorted(bb)[0]
         dep = bb[ref]["meta"]["pre_iter"] + 300 * bb[ref]["meta"]["set_max_iter"]
-        caps, rows = experiment1(bb, ref, "relay", extra_caps={"deployed": float(dep)})
+        caps, rows = experiment1(bb, ref, "relay",
+                                 extra_caps={"deployed": float(dep), **cap_ladder(bb, bb[ref]["cens_at"])})
         summary["relay_caps"] = dict(reference=ref, caps=caps)
-        fig_ler_vs_d(bb, caps, rows, "relay", "Relay-BP BB",
-                     xlabels=lambda k: f"{BB_CODES[k[0]].n},{BB_CODES[k[0]].k},{BB_CODES[k[0]].d}")
-        keys = [k for k in sorted(bb, key=lambda k: BB_CODES[k[0]].n) if k[1] == 0.003]
-        fig_PL_vs_c(bb, keys, "relay", "Relay-BP")
-        fig_scaled_caps(bb, scaled_cap_rows(bb, "relay"), "relay", "Relay-BP, scaled cap",
-                        xlabels=lambda k: f"{BB_CODES[k[0]].n},{BB_CODES[k[0]].k},{BB_CODES[k[0]].d}")
+        fig_ler_vs_p(bb, caps, rows, "relay", "Relay-BP",
+                     lambda c: f"[[{BB_CODES[c].n},{BB_CODES[c].k},{BB_CODES[c].d}]]", always=("deployed",))
 
     # ---------------- Experiment 2: tails
     tail_rows = []
@@ -479,14 +440,17 @@ def main():
         ta = allta[(fam, key)]
         tag = f"{fam}_{'_'.join(str(x) for x in key)}"
         fig_diagnostics(P, ta, f"exp2_diag_{tag}.png", title)
-        fig_extrapolation(P, ta, f"exp2_extrap_{tag}.png", title)
         buffers[tag] = dict(title=title, mean=float(P["S"].mean()), median=float(np.median(P["S"])),
                             best=ta.get("best_aic"), table=buffer_table(P, ta))
     dump(buffers, "exp2_buffers.json")
+    for (fam, key), ta in allta.items():
+        P = (mw if fam == "mwpm" else bb)[key]
+        if P["d"] < 7:
+            continue
+        name = f"MWPM surface d={key[0]}" if fam == "mwpm" else f"Relay-BP {P['label']}"
+        fig_extrapolation(P, ta, f"exp2_extrap_{fam}_{'_'.join(str(x) for x in key)}.png", f"{name} p={key[1]:g}")
 
     nconv5_analysis(bb)
-    fig_param_trends(tail_rows)
-    fig_buffers(buffers)
 
     # ---------------- Lindley check (D/G/1) for selected points
     if not a.skip_lindley:
@@ -509,7 +473,6 @@ def main():
             lind[f"{fam}_{'_'.join(str(x) for x in key)}"] = res
             print("[lindley]", key, res, flush=True)
         dump(lind, "exp2_lindley.json")
-        fig_lindley(lind)
     dump({k: (v if not isinstance(v, dict) else {kk: (str(vv) if isinstance(vv, tuple) else vv) for kk, vv in v.items()})
           for k, v in summary.items()}, "summary.json")
 
@@ -547,81 +510,6 @@ def nconv5_analysis(bb1):
     fig.savefig(os.path.join(FIG, "exp2_relay_S1_vs_S5.png"))
     plt.close(fig)
     dump(out, "exp2_relay_nconv5.json")
-
-
-def fig_param_trends(tail_rows):
-    if not tail_rows:
-        return
-    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.0))
-    for fam, mk in [("mwpm", "o-"), ("relay", "s-")]:
-        rows = [r for r in tail_rows if r["family"] == fam]
-        for p in sorted({r["p"] for r in rows}):
-            rr = sorted([r for r in rows if r["p"] == p], key=lambda r: (r["d"], r["point"]))
-            if fam == "mwpm":
-                xs = [r["d"] for r in rr]
-            else:
-                xs = [BB_CODES[r["point"].strip("[]").replace(",", "_")].n for r in rr]
-            lab = f"{'MWPM' if fam == 'mwpm' else 'Relay'} p={p:g}"
-            axes[0].errorbar(xs, [r["xi"] for r in rr],
-                             yerr=[[max(r["xi"] - r["xi_lo"], 0) for r in rr], [max(r["xi_hi"] - r["xi"], 0) for r in rr]],
-                             fmt=mk, ms=3, capsize=2, label=lab)
-            axes[1].plot(xs, [r.get("lognormal_sigma", np.nan) for r in rr], mk, ms=3, label=lab)
-    axes[0].axhline(0, color="k", lw=0.7)
-    axes[0].set_title(r"GPD shape $\xi$ above $u$ ($\xi>0$: Pareto-type)")
-    axes[1].set_title(r"lognormal tail fit $\sigma$")
-    for ax in axes:
-        ax.set_xlabel("d (MWPM) / n (BB)")
-        ax.set_xscale("log")
-    axes[0].legend(fontsize=6)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIG, "exp2_param_trends.png"))
-    plt.close(fig)
-
-
-def fig_buffers(buffers):
-    if not buffers:
-        return
-    tags = list(buffers)
-    fig, axes = plt.subplots(1, len(tags), figsize=(3.2 * len(tags), 3.1), squeeze=False, sharey=False)
-    for ax, tag in zip(axes[0], tags):
-        B = buffers[tag]
-        best = B["best"]
-        tbl = B["table"].get(best)
-        if not isinstance(tbl, list):
-            continue
-        eps = [r["eps"] for r in tbl]
-        for m, ls in [(1, "-"), (2, "--"), (3, ":")]:
-            ax.loglog(eps, [r[f"med_m{m}"] for r in tbl], "k" + ls,
-                      label=f"{'sliding (D/G/1)' if m == 1 else f'PWD m={m}'} [{best}]")
-        for name in ("lognormal", "pareto"):
-            t2 = B["table"].get(name)
-            if isinstance(t2, list) and name != best:
-                ax.loglog(eps, [r["med_m1"] for r in t2], color=COLORS[name], lw=0.8, label=f"D/G/1 [{name}]")
-        ax.invert_xaxis()
-        ax.set_xlabel(r"target $\varepsilon$")
-        ax.set_title(B["title"], fontsize=7.5)
-        ax.legend(fontsize=5.5)
-    axes[0][0].set_ylabel("buffer (units of median decode work)")
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIG, "exp2_buffer_vs_eps.png"))
-    plt.close(fig)
-
-
-def fig_lindley(lind):
-    fig, axes = plt.subplots(1, len(lind), figsize=(3.6 * len(lind), 3.0), squeeze=False)
-    for ax, (tag, res) in zip(axes[0], lind.items()):
-        for rho, r in res.items():
-            l, = ax.loglog(r["thresholds_med"], np.where(np.array(r["P_overflow"]) > 0, r["P_overflow"], np.nan),
-                           "o-", ms=3, label=f"Lindley sim rho={rho}")
-            ax.loglog(r["thresholds_med"], r["veraverbeke_empirical"], "--", color=l.get_color(), lw=1,
-                      label=r"$\frac{\rho}{1-\rho}\bar F_I(x)$")
-        ax.set_xlabel("buffer x (units of median S)")
-        ax.set_ylabel("P(W > x)")
-        ax.set_title(tag, fontsize=8)
-        ax.legend(fontsize=6)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIG, "exp2_lindley.png"))
-    plt.close(fig)
 
 
 if __name__ == "__main__":
