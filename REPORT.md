@@ -1,15 +1,12 @@
 # synbuf: Results Report (Experiments 1 and 2)
 
-*Status as of 2026-10-04. Describes the runs actually performed and the results currently on disk in `data/`, `results/` and `figures/`. The plan these runs implement is in [EXPERIMENTS.md](EXPERIMENTS.md); deviations from it are listed in [§2](#2-what-was-and-was-not-run).*
+*Status as of 2026-10-10. Describes the runs actually performed and the results currently on disk in `data/`, `results/` and `figures/`. The plan these runs implement is in [EXPERIMENTS.md](EXPERIMENTS.md); deviations from it are listed in [§2](#2-what-was-and-was-not-run). The earlier MWPM runs ($d=3,7,11,15$, legacy work metric) and every result built on them were removed on 2026-10-10. MWPM is now covered only in [§7](#7-union-find-decoder-ldpc-vs-mwpm-full-operation-counts), with full operation counts; §4–5 cover Relay-BP only.*
 
 ## 1. Summary of findings
 
-1. **Capping the decoder blows up the logical error rate; it does not, in general, produce a flat error floor.** With a fixed work budget $c$, the capped LER $P_L(c)$ tracks the uncapped LER at low $p$ and then rises far faster than it as $p$ grows, eventually saturating at 1. The excess is set by $P(S>c)$, which is strongly $p$- and $d$-dependent, so the cap acts as an additional, rapidly growing failure mechanism rather than a constant offset.
-2. **The blow-up gets worse with distance.** Decode work grows with $d$ (MWPM median work at $p=10^{-3}$: 14, 62 and 167 operations at $d=7, 11, 15$), so a fixed budget binds harder on larger codes. At $p=3\times10^{-3}$ with $c=1000$, the MWPM LER is $1.7\times10^{-3}$ at $d=7$, $4.5\times10^{-4}$ at $d=11$, and $1.4\times10^{-2}$ at $d=15$: going from $d=11$ to $d=15$ makes the capped decoder about 30× *worse*, while the uncapped LER improves about 8×. Capping is therefore incompatible with scaling distance toward $\varepsilon\approx10^{-12}$, which **motivates buffering syndromes instead of capping**.
-3. **MWPM work has a mildly heavy tail.** At $d=7$ the tail is close to the Gumbel domain (lognormal-like, GPD shape $\xi\approx0.04$–$0.12$). At $d=11$ and $15$ it is Pareto-type with $\xi\approx0.14$–$0.28$ (Pareto $\alpha\approx5.7$–$9.7$). The fitted tails imply modest buffers: tens to a few hundred median decodes for a sliding window at $\varepsilon=10^{-12}$, and under 15 median decodes with 2 spare servers.
-4. **Relay-BP work has a much heavier, power-law tail that grows heavier with $p$.** $\xi$ ranges from about 0.05–0.4 at $p=5\times10^{-4}$, through 0.34–0.94 at $10^{-3}$, to above 1 at $3\times10^{-3}$ for the three codes with $d\ge10$ ($\alpha\approx0.74$–$1.01$). A fit at a 10× higher threshold gives $\xi\approx0.84$–$1.15$ there, so the tail sits at or near the infinite-mean boundary rather than clearly beyond it. With $\alpha\le1$ the leading-order buffer formulas diverge, and a D/G/1 Lindley simulation of [[144,12,12]] at $p=3\times10^{-3}$ spends about a quarter of its time draining single huge decodes even at load $\rho=0.5$. Spare servers (parallel windows) shrink the Pareto-tail buffer by orders of magnitude where the formulas still apply.
-
-5. **With all bounded-cost operations counted, union-find has a lighter tail than MWPM, and MWPM's heaviest tail comes from its primal (matching) side** ([§7](#7-union-find-decoder-ldpc-vs-mwpm-full-operation-counts)). At $d\in\{11,15\}$ and $p\in\{10^{-3},3\times10^{-3}\}$, MWPM's total work has $\xi\approx0.17$–$0.31$ (Pareto-type) and a maximum of 8–12× the median. Its primal work is only about 10% of the mean but has the heaviest tail ($\xi\approx0.21$–$0.45$, rising with $p$ and $d$). Peeling UF has $\xi\approx0.14$ at $p=10^{-3}$, $\xi\approx0$ at $p=3\times10^{-3}$, and a maximum of 4–6× the median. This UF variant is much less accurate than MWPM: about 36× and 210× higher LER at $p=3\times10^{-3}$ for $d=11$ and $d=15$.
+1. **Capping Relay-BP blows up the logical error rate; it does not produce a flat error floor.** With a fixed work budget $c$, the capped LER $P_L(c)$ tracks the uncapped LER at low $p$ and then rises far faster than it as $p$ grows. For [[144,12,12]] with $c=200$ iterations, $P_L(c)=2\times10^{-6}$, $5.5\times10^{-5}$ and $1.5\times10^{-2}$ at $p=5\times10^{-4}$, $10^{-3}$ and $3\times10^{-3}$, while the uncapped LER is 0, 0 and $5.3\times10^{-4}$. The excess is set by $P(S>c)$, which is strongly $p$-dependent. So the cap acts as an additional, rapidly growing failure mechanism rather than as a constant offset.
+2. **Relay-BP work has a much heavier, power-law tail that grows heavier with $p$.** $\xi$ ranges from about 0.05–0.4 at $p=5\times10^{-4}$, through 0.34–0.94 at $10^{-3}$, to above 1 at $3\times10^{-3}$ for the three codes with $d\ge10$ ($\alpha\approx0.74$–$1.01$). A fit at a 10× higher threshold gives $\xi\approx0.84$–$1.15$ there, so the tail sits at or near the infinite-mean boundary rather than clearly beyond it. With $\alpha\le1$ the leading-order buffer formulas diverge, and a D/G/1 Lindley simulation of [[144,12,12]] at $p=3\times10^{-3}$ spends about a quarter of its time draining single huge decodes even at load $\rho=0.5$. Spare servers (parallel windows) shrink the Pareto-tail buffer by orders of magnitude where the formulas still apply.
+3. **With all bounded-cost operations counted, union-find has a lighter tail than MWPM, and MWPM's heaviest tail comes from its primal (matching) side** ([§7](#7-union-find-decoder-ldpc-vs-mwpm-full-operation-counts)). At $d\in\{11,15\}$ and $p\in\{10^{-3},3\times10^{-3}\}$, MWPM's total work has $\xi\approx0.17$–$0.31$ (Pareto-type) and a maximum of 8–12× the median. Its primal work is only about 10% of the mean but has the heaviest tail ($\xi\approx0.21$–$0.45$, rising with $p$ and $d$). Peeling UF has $\xi\approx0.14$ at $p=10^{-3}$, $\xi\approx0$ at $p=3\times10^{-3}$, and a maximum of 4–6× the median. This UF variant is much less accurate than MWPM: about 36× and 210× higher LER at $p=3\times10^{-3}$ for $d=11$ and $d=15$.
 
 ## 2. What was and was not run
 
@@ -17,18 +14,18 @@
 
 | Item | What was done |
 |---|---|
-| MWPM data | Rotated surface code memory, $d\in\{3,7,11,15\}$, $p\in\{5\times10^{-4},10^{-3},3\times10^{-3}\}$, $10^6$ shots per point (12 points) |
-| Relay-BP data | BB codes [[72,12,6]], [[90,8,10]], [[108,8,10]], [[144,12,12]], same $p$ grid, $10^6$ shots per point (12 points) |
-| Instrumented decoders | PyMatching and Relay-BP built from pinned commits with the patches in `third_party/` (`scripts/build_decoders.sh`) |
+| Relay-BP data | BB codes [[72,12,6]], [[90,8,10]], [[108,8,10]], [[144,12,12]], $p\in\{5\times10^{-4},10^{-3},3\times10^{-3}\}$, $10^6$ shots per point (12 points) |
+| MWPM and UF data | Rotated surface code memory, $d\in\{11,15\}$, $p\in\{10^{-3},3\times10^{-3}\}$, $10^6$ shots per point for each decoder (§7). The earlier MWPM runs ($d\in\{3,7,11,15\}$ at three values of $p$, legacy metric) were removed. |
+| Instrumented decoders | PyMatching, Relay-BP and ldpc (union-find), built from pinned commits with the patches in `third_party/` (`scripts/build_decoders.sh`) |
 | Relay-BP parameters | Per-code tuned values from `results/relay_params.json` (tuned earlier; see `results/relay_tuning_notes.md`) |
-| Experiment 1 | Offline $P_L(c)$ for an absolute cap ladder, the deployed Relay-BP limit, and calibrated caps $c_3,c_4,c_5$ |
-| Experiment 2 | Peaks-over-threshold tail fits (GPD, exponential, lognormal, Pareto), Vuong tests, AIC ranking and censored likelihood for every MWPM point with $d\ge5$ and every Relay-BP point; diagnostics and buffer tables for 9 selected points; extrapolation plots for every point with $d\ge7$; D/G/1 Lindley simulation at 2 points |
+| Experiment 1 (Relay-BP) | Offline $P_L(c)$ for an absolute cap ladder, the deployed Relay-BP limit, and calibrated caps $c_3,c_4,c_5$ |
+| Experiment 2 (Relay-BP) | Peaks-over-threshold tail fits (GPD, exponential, lognormal, Pareto), Vuong tests, AIC ranking and censored likelihood for every point; buffer tables for 5 selected points; an empirical log-log survival plot for every point; D/G/1 Lindley simulation at 1 point |
 
 ### Not run, or run differently from EXPERIMENTS.md
 
 | Planned in EXPERIMENTS.md | Status |
 |---|---|
-| Odd $d$ from 3 to about 15 | Only $d=3,7,11,15$; $d=5,9,13$ were skipped. $d=3$ is excluded from the tail fits by design. |
+| MWPM: odd $d$ from 3 to about 15, three values of $p$ | Only $d=11,15$ at $p\in\{10^{-3},3\times10^{-3}\}$ (§7); no MWPM capping experiment |
 | Uniform depolarizing **or** SI1000 noise | Uniform circuit-level depolarizing only |
 | Validate BB-code LERs against published values | Not part of this run |
 | Optional coprime BB codes | Not included. [[288,12,18]] has tuned parameters but no data in this run |
@@ -41,7 +38,8 @@
 | Tail-parameter trends with $d$ and $p$ (figure) | Parameters are reported in tables (§5.3); the trend figure was removed |
 | Buffer size vs $\varepsilon$ (figure) | Buffer values are in `results/exp2_buffers.json` and summarized in §5.4; the figure was removed |
 | PWD (D/G/k) buffer | Leading-order formulas only; no multi-server simulation |
-| Lindley check | D/G/1 only, at 2 points; numbers in `results/exp2_lindley.json`, figure removed |
+| Lindley check | D/G/1 only, at 1 point; numbers in `results/exp2_lindley.json`, figure removed |
+| Diagnostic plots and fitted-tail extrapolation plots | Removed; each point has an empirical log-log survival plot without fitted curves |
 
 ## 3. Common setup
 
@@ -52,12 +50,12 @@
 **Window.** One $d$-round memory block is decoded as one window. All LERs are per window, and for BB codes per window of the whole block (any logical error among the $k$ logical qubits counts as one failure).
 
 **Work metric $S$.**
-- MWPM: $S$ = priority-queue pops + detector-node reschedules in Sparse Blossom, from the op-counter patch (`decode_batch_with_op_counts`). Flooder and matcher event counts are recorded too but not used.
+- MWPM and union-find: the sum of all bounded-cost operation counters (§7).
 - Relay-BP: $S$ = total BP iterations up to and including the first converged leg (time to first solution, `stop_nconv=1`). Each decode runs 80 pre-iterations, then up to 10,000 legs of up to 60 iterations each, so the leg limit is $80+10{,}000\times60=600{,}080$ iterations. A shot that reaches it without converging is **censored** and counted as a logical failure.
 
-**Sampling.** Shots are split into chunks with per-chunk seeds and decoded by 10 worker processes, so results do not depend on the worker count. Data: `data/mwpm/surface_d{d}_p{p}.npz` and `data/relay/bb{code}_p{p}/`.
+**Sampling.** Shots are split into chunks with per-chunk seeds and decoded by 10 worker processes, so results do not depend on the worker count. Data: `data/relay/bb{code}_p{p}/`, `data/mwpm/surface_d{d}_p{p}.npz` and `data/uf/surface_d{d}_p{p}.npz`.
 
-## 4. Experiment 1: decoder caps and the LER
+## 4. Experiment 1: decoder caps and the LER (Relay-BP)
 
 ### 4.1 Method
 
@@ -67,29 +65,18 @@ $$P_L(c) = P(F_\infty,\ S\le c) + P(S>c).$$
 
 ### 4.2 Caps
 
-- **Absolute ladder.** Caps on a 1-2-5 grid from the smallest median $S$ to the largest observed $S$, kept below the Relay-BP leg limit: 2 to 2,000 operations for MWPM, 2 to 500,000 iterations for Relay-BP. Each cap is held fixed while $d$ and $p$ vary.
+- **Absolute ladder.** Caps on a 1-2-5 grid from 2 to 500,000 iterations (from the smallest median $S$ to the largest observed $S$, kept below the leg limit). Each cap is held fixed while the code and $p$ vary.
 - **Deployed Relay-BP limit.** $80 + 300\times60 = 18{,}080$ iterations (300 legs, the limit used during tuning).
-- **Calibrated caps.** $c_j$ with $P(S>c_j)=10^{-j}$ at a reference point. For MWPM the reference is $(d=11, p=10^{-3})$, giving $c_3=209$, $c_4=295$, $c_5=442$. For Relay-BP the reference is ([[144,12,12]], $p=3\times10^{-3}$), giving $c_3=2{,}806$ and $c_4=66{,}456$; $c_5$ cannot be calibrated because the censored fraction there ($2.6\times10^{-5}$) exceeds $10^{-5}$. These are listed in `results/exp1_*.{json,csv}` but not plotted.
+- **Calibrated caps.** $c_j$ with $P(S>c_j)=10^{-j}$ at the reference point ([[144,12,12]], $p=3\times10^{-3}$): $c_3=2{,}806$ and $c_4=66{,}456$. $c_5$ cannot be calibrated, because the censored fraction there ($2.6\times10^{-5}$) exceeds $10^{-5}$. These caps are listed in `results/exp1_relay.{json,csv}` but not plotted.
 
 ### 4.3 Results
 
-Figures: [`figures/exp1_ler_vs_p_mwpm.png`](figures/exp1_ler_vs_p_mwpm.png), [`figures/exp1_ler_vs_p_relay.png`](figures/exp1_ler_vs_p_relay.png). Each panel is one code. It shows the uncapped LER (dashed black) and up to five ladder caps that bind somewhere on the $p$ grid but cap fewer than 5% of shots at the lowest $p$; for Relay-BP it also shows the deployed limit (purple).
+Figure: [`figures/exp1_ler_vs_p_relay.png`](figures/exp1_ler_vs_p_relay.png). Each panel is one code. It shows:
+- the uncapped LER (dashed black);
+- up to five ladder caps that bind somewhere on the $p$ grid but cap fewer than 5% of shots at the lowest $p$;
+- the deployed limit (purple).
 
-**MWPM, $P_L(c)$ per window** (a value of 0 means no failures in $10^6$ shots):
-
-| $d$ | $p$ | median $S$ | uncapped | $c=200$ | $c=500$ | $c=1000$ | $c=2000$ |
-|---|---|---|---|---|---|---|---|
-| 7 | 5e-4 | 6 | 1.0e-6 | 3.0e-6 | 1.0e-6 | 1.0e-6 | 1.0e-6 |
-| 7 | 1e-3 | 14 | 2.0e-5 | 3.8e-5 | 2.0e-5 | 2.0e-5 | 2.0e-5 |
-| 7 | 3e-3 | 49 | 1.71e-3 | 6.18e-3 | 1.72e-3 | 1.71e-3 | 1.71e-3 |
-| 11 | 5e-4 | 30 | 0 | 3.1e-5 | 0 | 0 | 0 |
-| 11 | 1e-3 | 62 | 0 | 1.35e-3 | 6.0e-6 | 0 | 0 |
-| 11 | 3e-3 | 225 | 2.9e-4 | 0.648 | 9.23e-3 | 4.52e-4 | 2.91e-4 |
-| 15 | 5e-4 | 79 | 0 | 1.08e-3 | 1.0e-6 | 0 | 0 |
-| 15 | 1e-3 | 167 | 0 | 0.230 | 7.1e-5 | 1.0e-6 | 0 |
-| 15 | 3e-3 | 612 | 3.7e-5 | 1.00 | 0.848 | 1.43e-2 | 1.54e-4 |
-
-**Relay-BP, $P_L(c)$ per window** (deployed limit = 18,080 iterations):
+**Relay-BP, $P_L(c)$ per window** (deployed limit = 18,080 iterations; a value of 0 means no failures in $10^6$ shots):
 
 | Code | $p$ | median $S$ | uncapped | $c=200$ | $c=2000$ | deployed | $c=20{,}000$ | $c=200{,}000$ |
 |---|---|---|---|---|---|---|---|---|
@@ -110,17 +97,17 @@ The uncapped Relay-BP LER counts censored shots (those reaching 600,080 iteratio
 
 ### 4.4 Findings
 
-- **Blow-up, not a floor.** For a fixed cap, $P_L(c)$ converges to the uncapped LER as $p$ falls and rises much more steeply than it as $p$ grows. For MWPM at $d=15$, $c=1000$: below $10^{-6}$ at $p=5\times10^{-4}$, $10^{-6}$ at $10^{-3}$, and $1.4\times10^{-2}$ at $3\times10^{-3}$ (390× the uncapped LER). A floor would require $P(S>c)$ to be insensitive to $p$, but it is not: the cap opens a new failure channel whose rate grows quickly with $p$ and $d$.
-- **Larger distance makes capping worse.** At fixed $p$ and $c$, $P_L(c)$ is non-monotone in $d$ or increases with it. At $p=10^{-3}$, $c=500$: $2.0\times10^{-5}$, $6\times10^{-6}$ and $7.1\times10^{-5}$ at $d=7, 11, 15$, while the uncapped LER at $d=11$ and $15$ is below $10^{-6}$. The cap that is harmless at $d=7$ dominates at $d=15$.
+- **Blow-up, not a floor.** For a fixed cap, $P_L(c)$ converges to the uncapped LER as $p$ falls and rises much more steeply than it as $p$ grows. For [[144,12,12]] at $c=200$: $2\times10^{-6}$, $5.5\times10^{-5}$ and $1.5\times10^{-2}$ at $p=5\times10^{-4}$, $10^{-3}$ and $3\times10^{-3}$ (29× the uncapped LER at the highest $p$). A floor would require $P(S>c)$ to be insensitive to $p$, but it is not: the cap opens a new failure channel whose rate grows quickly with $p$.
 - **Relay-BP needs caps far above its median.** Because of its heavy tail, caps of $10^2$–$10^4\times$ the median still add measurable error at $p\ge10^{-3}$ for the $d\ge10$ codes. The deployed 300-leg limit raises the LER by 1.3–1.5× at $p=3\times10^{-3}$ and by about 3–6× at $p=10^{-3}$ for [[90,8,10]] and [[108,8,10]], though the low-$p$ counts are small (4 uncapped vs 24 capped failures for [[90,8,10]]). [[72,12,6]] is insensitive to every cap of 2,000 iterations or more because its LER is high.
-- **Statistics.** At $p\le10^{-3}$ for $d\ge11$ (MWPM) and the $d\ge10$ BB codes, the uncapped LER is at or below the $10^{-6}$ resolution of $10^6$ shots, so ratios at those points are lower bounds or rest on a handful of events. Error bars in the figures are 1σ Wilson intervals.
+- **The distance trend is not established.** The earlier MWPM runs suggested that a fixed cap hurts more at larger $d$. Those runs have been removed, and the BB codes do not form a distance family, so this report makes no claim about how capping scales with $d$.
+- **Statistics.** At $p\le10^{-3}$ for the $d\ge10$ BB codes, the uncapped LER is at or below the $10^{-6}$ resolution of $10^6$ shots, so ratios at those points are lower bounds or rest on a handful of events. Error bars in the figures are 1σ Wilson intervals.
 
-## 5. Experiment 2: tail class of the work distribution
+## 5. Experiment 2: tail class of the work distribution (Relay-BP)
 
 ### 5.1 Method
 
 Implemented in `synbuf/tails.py` and `scripts/analyze.py`, on the uncapped Experiment 1 data.
-- **Threshold.** $u$ is the empirical $(1-q)$ quantile of $S$, with $q=10^{-3}$ for MWPM and $q=10^{-2}$ for Relay-BP (about 2,000 and 10,000 exceedances respectively). A second fit at $q/10$ checks threshold stability.
+- **Threshold.** $u$ is the empirical $(1-q)$ quantile of $S$ with $q=10^{-2}$ (about 10,000 exceedances). A second fit at $q/10$ checks threshold stability. (§7 uses $q=10^{-3}$.)
 - **Fits.** Left-truncated MLE fits above $u$ of exponential, lognormal and Pareto tails, plus a generalized Pareto (GPD) fit with a bootstrap 95% interval on its shape $\xi$. $\xi>0$ indicates a Pareto-type tail; $\xi\approx0$ the Gumbel domain (exponential or lognormal).
 - **Model selection.** AIC ranking and pairwise Vuong likelihood-ratio tests.
 - **Censoring.** Relay-BP shots at the leg limit enter the likelihood as right-censored observations ($S>600{,}080$).
@@ -129,30 +116,11 @@ Implemented in `synbuf/tails.py` and `scripts/analyze.py`, on the uncapped Exper
 
 ### 5.2 Figures
 
-- Extrapolation of each fitted tail to $P(S>x)=10^{-15}$, for every point with $d\ge7$ (18 plots): `figures/exp2_extrap_{mwpm,relay}_*.png`.
-- Three-panel diagnostics ($\log\bar F$ vs $x$, $\log\bar F$ vs $\log x$ with fits, normal Q–Q of $\log S$) for 9 selected points: `figures/exp2_diag_*.png`.
-
-`figures/exp2_param_trends.png`, `exp2_buffer_vs_eps.png` and `exp2_lindley.png` are still on disk from an earlier run, but the analysis no longer generates them.
+- Empirical survival function $P(S>x)$ on log-log axes for every point (12 plots, no fitted curves): `figures/exp2_ccdf_relay_*.png`.
 
 ### 5.3 Tail fits
 
-From `results/exp2_tail_fits.csv`. "Censored" is the number of shots at the leg limit. "Vuong LN|P $p$" is the p-value of the lognormal-vs-Pareto test.
-
-**MWPM:**
-
-| $d$ | $p$ | $u$ | Best (AIC) | $\xi$ [95% CI] | Pareto $\alpha$ | Vuong LN\|P $p$ |
-|---|---|---|---|---|---|---|
-| 7 | 5e-4 | 53 | lognormal | 0.12 [0.07, 0.15] | 4.6 | 0.05 |
-| 7 | 1e-3 | 87 | lognormal | 0.05 [0.01, 0.10] | 4.9 | <0.01 |
-| 7 | 3e-3 | 240 | lognormal | 0.04 [−0.01, 0.08] | 5.4 | <0.01 |
-| 11 | 5e-4 | 106 | Pareto | 0.14 [0.09, 0.18] | 6.6 | 0.98 |
-| 11 | 1e-3 | 190 | Pareto | 0.18 [0.12, 0.22] | 6.8 | 0.69 |
-| 11 | 3e-3 | 640 | Pareto | 0.21 [0.17, 0.26] | 5.7 | 0.65 |
-| 15 | 5e-4 | 188 | Pareto | 0.14 [0.09, 0.18] | 9.4 | 0.57 |
-| 15 | 1e-3 | 351 | Pareto | 0.14 [0.07, 0.19] | 9.7 | 0.76 |
-| 15 | 3e-3 | 1261 | Pareto | 0.28 [0.22, 0.32] | 6.5 | 0.76 |
-
-**Relay-BP:**
+From `results/exp2_tail_fits.csv`. "Censored" is the number of shots at the leg limit.
 
 | Code | $p$ | $u$ | Best (AIC) | $\xi$ [95% CI] | Pareto $\alpha$ | Censored |
 |---|---|---|---|---|---|---|
@@ -175,10 +143,6 @@ From `results/exp2_buffers.json`, in units of the median decode work, at $\rho=0
 
 | Point | Model | Sliding (D/G/1) | PWD, $m=2$ | PWD, $m=3$ | GPD, D/G/1 |
 |---|---|---|---|---|---|
-| MWPM $d=15$, $p=5\times10^{-4}$ | Pareto | 26 | 5.0 | 2.9 | 48 |
-| MWPM $d=15$, $p=10^{-3}$ | Pareto | 21 | 4.3 | 2.5 | 40 |
-| MWPM $d=11$, $p=3\times10^{-3}$ | Pareto | 248 | 12.9 | 4.8 | 547 |
-| MWPM $d=15$, $p=3\times10^{-3}$ | Pareto | 87 | 6.9 | 3.0 | 2,350 |
 | Relay [[144,12,12]], $p=10^{-3}$ | Pareto | $9.5\times10^4$ | 247 | 34 | $4\times10^9$ |
 | Relay [[72,12,6]], $p=3\times10^{-3}$ | lognormal | $5.1\times10^7$ | $1.2\times10^5$ | $8.0\times10^3$ | $5.3\times10^{13}$ |
 | Relay [[90,8,10]], [[108,8,10]], [[144,12,12]], $p=3\times10^{-3}$ | Pareto | diverges | diverges | diverges | diverges |
@@ -189,8 +153,6 @@ From `results/exp2_lindley.json`. $P(W>x)$ is the fraction of windows whose back
 
 | Point | $\rho$ | $x=5$ | $x=50$ | $x=500$ | $x=5000$ |
 |---|---|---|---|---|---|
-| MWPM $d=15$, $p=3\times10^{-3}$ | 0.5 | $1.3\times10^{-6}$ | 0 | 0 | 0 |
-| MWPM $d=15$, $p=3\times10^{-3}$ | 0.8 | $1.4\times10^{-5}$ | 0 | 0 | 0 |
 | Relay [[144,12,12]], $p=3\times10^{-3}$ | 0.5 | 0.40 | 0.38 | 0.34 | 0.25 |
 | Relay [[144,12,12]], $p=3\times10^{-3}$ | 0.8 | 0.74 | 0.71 | 0.68 | 0.59 |
 
@@ -198,12 +160,8 @@ For Relay-BP, each decode that reaches the leg limit (about 1 in 40,000 windows)
 
 ### 5.6 Findings
 
-- **MWPM.**
-  - The bulk-lognormal hypothesis holds at $d=7$, where the tail is near the Gumbel domain and lognormal beats Pareto in the Vuong test.
-  - At $d\ge11$ the far tail is Pareto-type ($\xi\approx0.14$–$0.28$, CIs excluding 0). Exponential is rejected throughout. Lognormal and Pareto cannot be distinguished: the lognormal fit degenerates to a power law (very large $\sigma$, very negative $\mu$) and loses only on AIC's parameter penalty.
-  - Because $\alpha\approx6$–$10$, buffers stay modest: 21–248 median decodes for a sliding window at $10^{-12}$, and 2.5–13 with 2–3 spare servers. The GPD fits are more pessimistic (up to 2,350 at $d=15$, $p=3\times10^{-3}$), so the far-tail extrapolation is the main uncertainty.
 - **Relay-BP.**
-  - The tail is heavier than MWPM's at every $p\ge10^{-3}$ and grows heavier with $p$.
+  - The tail grows heavier with $p$. At every $p\ge10^{-3}$ it is heavier than MWPM's tail at the surface-code points of §7 (MWPM total work: $\xi\approx0.17$–$0.31$).
   - At $p=3\times10^{-3}$ the three $d\ge10$ codes have $\alpha\le1$ over the observed range. The single-server buffer has no finite leading-order size, and the simulated queue is dominated by individual huge decodes.
   - Where $\alpha>1$ ([[144,12,12]] at $p=10^{-3}$), spare servers cut the buffer from about $10^5$ to $34$ median decodes ($m=3$). This matches the prediction that parallel windows help most for a fat tail.
 - **Threshold caveat.** For Relay-BP the threshold $u$ sits only a few times above the median at $p\le10^{-3}$ (11–24 iterations), so those fits describe the top 1% of the distribution rather than only the far tail. The higher-threshold fits in `exp2_tail_fits.csv` (`xi_high_u`, `best_aic_high_u`) also give $\xi>0$ at every point but move $\xi$ by up to about 1 at some points (for example [[108,8,10]] at $p=5\times10^{-4}$: 0.42 vs 1.46). At $p=3\times10^{-3}$ the higher threshold gives $\xi=0.86$, $0.84$ and $1.15$ for [[90,8,10]], [[108,8,10]] and [[144,12,12]], and prefers lognormal for the first two. So $\xi>1$ at that $p$ is threshold-sensitive; the robust statement is that the tail is at or near the infinite-mean boundary.
@@ -212,29 +170,28 @@ For Relay-BP, each decode that reaches the leg limit (about 1 in 40,000 windows)
 ## 6. Reproducing these results
 
 ```sh
-scripts/build_decoders.sh            # patched PyMatching + Relay-BP into the active virtualenv
-scripts/pipeline.sh 10 mwpm relay    # data collection with 10 workers (resumable)
+scripts/build_decoders.sh            # patched PyMatching, Relay-BP and ldpc into the active virtualenv
+scripts/pipeline.sh 10 relay         # Relay-BP data collection with 10 workers (resumable)
 PYTHONPATH=. python3 scripts/analyze.py [--skip-lindley]
 ```
 
-Outputs:
-- `results/exp1_{mwpm,relay}.{json,csv}`: capped LER for every cap and point
+Outputs (§4–5):
+- `results/exp1_relay.{json,csv}`: capped LER for every cap and point
 - `results/exp2_tail_fits.{json,csv}`: all fits and tests
 - `results/exp2_buffers.json`: buffer tables for $\varepsilon=10^{-6}$ to $10^{-15}$
 - `results/exp2_lindley.json`: Lindley simulation
 - `results/summary.json`: cap definitions
-- `figures/`: the plots referenced above
+- `figures/exp1_ler_vs_p_relay.png`, `figures/exp2_ccdf_relay_*.png`
 
-Union-find (§7):
+MWPM and union-find (§7):
 
 ```sh
-scripts/pipeline.sh 14 uf            # data/uf, d in {11,15}, p in {1e-3, 3e-3}, 1e6 shots each
-                                     # (MWPM counterparts: same points in data/mwpm, from the mwpm stage)
+scripts/pipeline.sh 14 mwpm uf       # data/mwpm and data/uf: d in {11,15}, p in {1e-3, 3e-3}, 1e6 shots each
 PYTHONPATH=. python3 scripts/analyze_uf.py
 ```
 
 Outputs: `results/uf_summary.json`, `results/uf_tail_fits.{json,csv}`, `figures/uf_ccdf_vs_mwpm.png`,
-`figures/uf_components_{mwpm,uf}.png`, `figures/uf_diag_*.png`, `figures/uf_extrap_*.png`.
+`figures/uf_components_{mwpm,uf}.png`, `figures/uf_ccdf_{mwpm,uf}_*.png`.
 
 ## 7. Union-find decoder (ldpc) vs MWPM: full operation counts
 
@@ -248,7 +205,7 @@ Outputs: `results/uf_summary.json`, `results/uf_tail_fits.{json,csv}`, `figures/
   - **primal:** matcher events, alternating-tree operations (rotations, common-ancestor walks, shattering trees into matches, path pruning), blossom-cycle and blossom-recursion region operations, and detector-node visits caused by growth-rate changes and blossom (un)wrapping;
   - **extraction:** recursive blossom shattering at the end.
 
-  Predictions are bit-identical to stock PyMatching. The four points were re-collected into `data/mwpm` with the same seeds. The legacy metric of §4–5 ($\text{pq\_pops}+\text{node\_reschedules}$) is stored as `S_legacy`. It and every other field of the earlier files were reproduced exactly, so §4–5 are unaffected.
+  Predictions are bit-identical to stock PyMatching. The data are in `data/mwpm`. The earlier MWPM metric ($\text{pq\_pops}+\text{node\_reschedules}$, used by the removed MWPM runs) is also stored, as `S_legacy`.
 - **UF.** `UnionFindDecoder` from Roffe's `ldpc` (pinned commit `d342996`) in graph (peeling) mode with unweighted growth, which adds all neighbouring bits per step. Validity is the O(1) parity + boundary test. The patch (`third_party/ldpc_uf_op_counters.patch`) replaces upstream's spanning-tree peeler, which aborts on circuit-level surface-code clusters, with the standard peeler on a BFS spanning tree; growth, merging and validity are unchanged. Corrections were checked to reproduce the syndrome exactly. There are four component groups:
   - **growth:** cluster creation, row scans, bit additions and their column visits;
   - **merge:** merges and the nodes copied (ldpc merges by copying hash sets);
@@ -290,12 +247,12 @@ The best AIC model for $S$ is Pareto at all four MWPM points and at the two UF p
 Figures:
 - `figures/uf_ccdf_vs_mwpm.png`: survival functions of $S$, normalized by the median;
 - `figures/uf_components_{mwpm,uf}.png`: each component group against the total;
-- `figures/uf_diag_*.png` and `figures/uf_extrap_*.png`: diagnostics and fitted tails for $S$.
+- `figures/uf_ccdf_{mwpm,uf}_*.png`: empirical log-log survival function of $S$ for each point (no fitted curves).
 
 ### 7.3 Findings
 
 - **MWPM's heaviest tail is on the primal side.** Primal work (alternating trees, blossoms and the region-wide updates they trigger) is only about 10% of the mean but has the heaviest tail. At $p=3\times10^{-3}$, its $\xi=0.37$–$0.45$ (Pareto $\alpha=1/\xi\approx2.2$–$2.7$) against 0.20–0.27 for the dual. Its tail also gets heavier with $p$ and $d$. The ordering persists at the higher threshold (0.25–0.30 against 0.12–0.13). Within the observed range ($\ge10^{-6}$), $S$ is dominated by the dual, so the fit to $S$ itself gives a smaller $\xi$ (0.17–0.31). Asymptotically, by the bound above, the primal component sets the tail class of MWPM work.
-- **The §4–5 metric understates MWPM's tail.** It counts only PQ pops and reschedules. It sees primal events only through the reschedules they trigger, and misses the alternating-tree bookkeeping, blossom-cycle work and node visits of shrinking regions. It is mostly a dual metric. For capping and buffer conclusions at large $d$ and $p$, the primal tail should be used instead.
+- **The earlier MWPM metric (`S_legacy`) understates MWPM's tail.** It counts only PQ pops and reschedules. It sees primal events only through the reschedules they trigger, and misses the alternating-tree bookkeeping, blossom-cycle work and node visits of shrinking regions. It is mostly a dual metric. For capping and buffer conclusions at large $d$ and $p$, the primal tail should be used instead.
 - **UF's tail is lighter than MWPM's at every point, and lightens with $p$.**
   - The worst of $10^6$ UF decodes is 3.8–6.2× the median, against 7.7–12.5× for MWPM.
   - At $p=10^{-3}$, UF's $\xi\approx0.14$–$0.15$ (CI above 0, so a mildly heavy, Pareto-type tail with $\alpha\approx7$).

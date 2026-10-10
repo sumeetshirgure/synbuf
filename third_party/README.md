@@ -34,7 +34,7 @@ of its heaviest-tailed component, whatever the per-counter costs.
 
   Decoding results are unchanged; predictions were checked to be bit-identical to stock
   `decode_batch`. `pq_pops` and `node_reschedules` are counted exactly as in the earlier version of
-  this patch, so the metric used for `data/mwpm` (their sum, `S_legacy`) is reproducible.
+  this patch, so the earlier metric (their sum, stored as `S_legacy`) is reproducible.
 - **relay_bp_stats.patch** adds a `BPExtraResult::Relay` variant that records the BP iterations up
   to the first converged leg, the number of legs executed and the first converged correction. It
   also adds `ObservableDecoderRunner.decode_stats_batch`, a parallel batch API returning

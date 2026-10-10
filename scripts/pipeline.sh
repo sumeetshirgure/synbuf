@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Data-collection pipeline: MWPM sweep, Relay-BP tuning (only if results/relay_params.json is
+# Data-collection pipeline: MWPM surface-code points, Relay-BP tuning (only if results/relay_params.json is
 # missing), BB-code collection, the stop_nconv=5 secondary run and the union-find (ldpc) surface-code
 # sweep. All runs are resumable.
 #
@@ -19,7 +19,7 @@ mkdir -p logs
 for stage in $STAGES; do
   case "$stage" in
     mwpm)
-      python3 -m synbuf.run_mwpm --d 3 7 11 15 --p $PS --shots $SHOTS --workers "$N" >> logs/mwpm.log 2>&1 ;;
+      python3 -m synbuf.run_mwpm --d 11 15 --p 0.001 0.003 --shots $SHOTS --workers "$N" >> logs/mwpm.log 2>&1 ;;
     tune)
       [ -f results/relay_params.json ] || python3 scripts/tune_relay.py > logs/tune.log 2>&1 ;;
     relay)
@@ -31,7 +31,7 @@ for stage in $STAGES; do
       python3 -m synbuf.run_relay --codes 144_12_12 --p 0.003 --shots 20000 --stop-nconv 5 --tag _nconv5 \
         --workers "$N" >> logs/relay.log 2>&1 ;;
     uf)
-      # data/uf; the matching MWPM points come from the mwpm stage (data/mwpm)
+      # data/uf; the same points for MWPM come from the mwpm stage (data/mwpm)
       python3 -m synbuf.run_uf --d 11 15 --p 0.001 0.003 --shots $SHOTS --workers "$N" >> logs/uf.log 2>&1 ;;
     *)
       echo "unknown stage: $stage" >&2; exit 1 ;;

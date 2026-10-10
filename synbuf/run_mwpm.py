@@ -6,7 +6,7 @@ Decodes always run to completion.
 Work metrics:
     S        = sum of all counters in COUNTERS (dual flooder, primal matcher and match extraction);
                every counter counts bounded-cost operations, see third_party/README.md
-    S_legacy = pq_pops + node_reschedules (the metric used for data/mwpm in REPORT.md §4-5)
+    S_legacy = pq_pops + node_reschedules (the earlier, mostly dual-side metric; see REPORT.md §7)
 
 Shots are split into batches of `chunk` shots that are decoded by a pool of `workers` processes.
 Batch i is sampled with a seed derived from (seed, i), so results do not depend on `workers`.

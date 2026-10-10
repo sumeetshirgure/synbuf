@@ -85,7 +85,7 @@ def fit(x, frac=TAIL_FRAC):
     hi = tails.analyze_tail(x, tail_frac=fr / 10)
     out["xi_high_u"] = (hi.get("gpd") or {}).get("xi")
     out["best_aic_high_u"] = hi.get("best_aic")
-    return out, ta
+    return out
 
 
 def describe(x):
@@ -164,7 +164,7 @@ def main():
                 x = P[metric]
                 if x.max() <= 0:
                     continue
-                fr, ta = fit(x)
+                fr = fit(x)
                 fits[metric] = fr
                 desc = entry["S"] if metric == "S" else entry["components"][metric]
                 row = dict(decoder=dec, d=d, p=p, metric=metric, median=desc["median"], mean=desc["mean"],
@@ -178,9 +178,8 @@ def main():
                         row[f"{name}_aic"] = fr["aic"][name]
                 rows.append(row)
                 if metric == "S":
-                    title = f"{dec} surface d={d} p={p:g}: total work S"
-                    an.fig_diagnostics(dict(S=x), ta, f"uf_diag_{dec.lower()}_{d}_{p:g}.png", title)
-                    an.fig_extrapolation(dict(S=x), ta, f"uf_extrap_{dec.lower()}_{d}_{p:g}.png", title)
+                    an.fig_ccdf(x, f"uf_ccdf_{dec.lower()}_{d}_{p:g}.png",
+                                f"{dec} surface d={d} p={p:g}: total work S", xlabel="S (operations)")
             comp = [g for g in GROUPS[dec] if g in fits and fits[g]["xi"] is not None]
             heaviest = max(comp, key=lambda g: fits[g]["xi"])
             entry["tail"] = dict(S=fits["S"], heaviest_component=heaviest,

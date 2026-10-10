@@ -1,6 +1,8 @@
-"""Run all Experiment 1 / Experiment 2 analyses on collected data.
+"""Run the Experiment 1 / Experiment 2 analyses for Relay-BP (BB codes) on collected data.
 
-Outputs: results/*.json, results/*.csv and figures/*.png.
+MWPM and union-find are analyzed by scripts/analyze_uf.py (full bounded-cost operation counts).
+
+Outputs: results/exp*.json, results/exp*.csv and figures/exp*.png.
 Usage: PYTHONPATH=. python3 scripts/analyze.py [--skip-lindley]
 """
 import argparse
@@ -17,8 +19,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker  # noqa: E402
 import numpy as np  # noqa: E402
-from scipy import stats  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from synbuf import buffer as buf  # noqa: E402
@@ -31,8 +33,6 @@ os.makedirs(RES, exist_ok=True)
 os.makedirs(FIG, exist_ok=True)
 EPS_GRID = np.logspace(-6, -15, 10)
 MODEL_NAMES = ["exponential", "lognormal", "pareto"]
-COLORS = {"exponential": "#1f77b4", "lognormal": "#d62728", "pareto": "#9467bd",
-          "gpd": "#ff7f0e"}
 plt.rcParams.update({"font.size": 9, "figure.dpi": 130, "axes.grid": True, "grid.alpha": 0.3})
 
 
@@ -53,20 +53,6 @@ def dump(obj, name):
 
 
 # ------------------------------------------------------------------ data loading
-def load_mwpm():
-    pts = {}
-    for f in sorted(glob.glob("data/mwpm/surface_d*_p*.npz")):
-        m = re.search(r"d(\d+)_p([0-9.e-]+)\.npz", f)
-        d, p = int(m.group(1)), float(m.group(2))
-        z = np.load(f)
-        # §4-5 use S = pq_pops + node_reschedules; newer runs store it as S_legacy (see run_mwpm.py)
-        S = z["S_legacy"] if "S_legacy" in z else z["S"]
-        pq = z["pq_pops"] if "pq_pops" in z else z["pq"]
-        pts[(d, p)] = dict(S=S, pq=pq, fail=z["fail"],
-                           label=f"surface d={d}", d=d, p=p, decoder="MWPM")
-    return pts
-
-
 def load_bb(tag=""):
     pts = {}
     for code in BB_CODES:
@@ -156,8 +142,6 @@ def _informative_caps(P_by_p, caps, max_lines=5, min_slow=10, max_frac=0.05):
 def fig_ler_vs_p(pts, caps, rows, family, title, panel_label, always=()):
     """P_L(c) vs p at fixed (d, c): one panel per code, one line per cap (subset), plus uncapped p_L."""
     codes = sorted({k[0] for k in pts}, key=lambda c: _order((c, 0)))
-    if family == "mwpm":
-        codes = [c for c in codes if c >= 7]
     fig, axes = plt.subplots(1, len(codes), figsize=(3.2 * len(codes), 3.9), sharey=True, squeeze=False)
     for ax, code in zip(axes[0], codes):
         keys = sorted([k for k in pts if k[0] == code], key=lambda k: k[1])
@@ -298,68 +282,16 @@ def buffer_table(P, ta, rho=0.5, ms=(1, 2, 3)):
     return out
 
 
-def fig_diagnostics(P, ta, fname, title):
-    S = P["S"].astype(np.float64)
-    x, sf = tails.survival(S)
-    ok = sf > 0
-    x, sf = x[ok], sf[ok]
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3.0))
-    ax = axes[0]
-    ax.semilogy(x, sf, "k.", ms=2)
-    ax.set_xlabel("S")
-    ax.set_ylabel(r"$\bar F(S)$")
-    ax.set_title(r"$\log\bar F$ vs $x$ (exponential: line)")
-    ax = axes[1]
-    ax.loglog(x, sf, "k.", ms=2, label="empirical")
-    u, pu = ta["u"] + 0.5, ta["pu"]
-    xx = np.logspace(np.log10(u), np.log10(x.max() * 30), 200)
-    for name, f in ta["fits"].items():
-        ax.loglog(xx, tails.model_sf(name, f["params"], xx, u, pu), color=COLORS[name], lw=1, label=name)
-    ax.set_ylim(max(sf.min() / 30, 1e-12), 1.2)
-    ax.set_xlabel("S")
-    ax.set_title(r"$\log\bar F$ vs $\log x$ (Pareto: line) + tail fits")
-    ax.legend(fontsize=6)
-    ax = axes[2]
-    lS = np.log(np.maximum(S, 1))
-    sub = np.sort(lS)[:: max(1, len(lS) // 20000)]
-    tailpart = np.sort(lS)[-2000:]
-    qq = np.r_[sub, tailpart]
-    n = len(lS)
-    ranks = np.r_[np.arange(0, n, max(1, n // 20000))[: len(sub)], np.arange(n - 2000, n)]
-    theo = stats.norm.ppf((ranks + 0.5) / n)
-    ax.plot(theo, qq, "k.", ms=2)
-    ax.set_xlabel("normal quantile")
-    ax.set_ylabel(r"$\log S$")
-    ax.set_title(r"normal Q-Q of $\log S$ (lognormal: line)")
-    fig.suptitle(title)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIG, fname))
-    plt.close(fig)
-
-
-def fig_extrapolation(P, ta, fname, title):
-    S = P["S"].astype(np.float64)
-    x, sf = tails.survival(S)
-    ok = sf > 0
+def fig_ccdf(S, fname, title, xlabel="S (work units)"):
+    """Empirical survival function P(S > x) on log-log axes (no fitted curves)."""
+    x, sf = tails.survival(np.asarray(S, dtype=np.float64))
+    ok = (sf > 0) & (x > 0)
     fig, ax = plt.subplots(figsize=(4.8, 3.6))
-    ax.loglog(x[ok], sf[ok], "k.", ms=2, label="empirical")
-    u, pu = ta["u"] + 0.5, ta["pu"]
-    xmax = max(x.max() * 30, 10 * u)
-    for name, f in ta["fits"].items():
-        try:
-            xe = tails.model_isf(name, f["params"], 1e-15, u, pu)
-            xmax = max(xmax, min(xe, 1e9))
-        except Exception:
-            pass
-    xx = np.logspace(np.log10(u), np.log10(xmax), 300)
-    for name, f in ta["fits"].items():
-        ax.loglog(xx, tails.model_sf(name, f["params"], xx, u, pu), color=COLORS[name], lw=1, label=name + " fit")
-    ax.set_ylim(1e-16, 1.5)
-    ax.axhline(1e-12, color="gray", lw=0.6, ls=":")
-    ax.set_xlabel("S (work units)")
+    ax.loglog(x[ok], sf[ok], "k.", ms=2)
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    ax.set_xlabel(xlabel)
     ax.set_ylabel(r"$P(S>x)$")
     ax.set_title(title, fontsize=8)
-    ax.legend(fontsize=6)
     fig.tight_layout()
     fig.savefig(os.path.join(FIG, fname))
     plt.close(fig)
@@ -371,16 +303,8 @@ def main():
     a = ap.parse_args()
     summary = {}
 
-    # ---------------- MWPM
-    mw = load_mwpm()
     bb = load_bb()
-    print("MWPM points:", len(mw), " BB points:", len(bb))
-
-    if mw:
-        ref = (11, 0.001) if (11, 0.001) in mw else sorted(mw)[len(mw) // 2]
-        caps, rows = experiment1(mw, ref, "mwpm", extra_caps=cap_ladder(mw))
-        summary["mwpm_caps"] = dict(reference=ref, caps=caps)
-        fig_ler_vs_p(mw, caps, rows, "mwpm", "MWPM surface code", lambda d: f"d={d}")
+    print("BB points:", len(bb))
 
     if bb:
         ref = ("144_12_12", 0.003) if ("144_12_12", 0.003) in bb else sorted(bb)[0]
@@ -394,10 +318,8 @@ def main():
     # ---------------- Experiment 2: tails
     tail_rows = []
     allta = {}
-    for fam, pts, frac in [("mwpm", mw, 1e-3), ("relay", bb, 1e-2)]:
+    for fam, pts, frac in [("relay", bb, 1e-2)]:
         for key, P in sorted(pts.items(), key=lambda kv: (kv[1]["p"], kv[1]["d"], str(kv[0]))):
-            if fam == "mwpm" and P["d"] < 5:
-                continue
             fr = frac if len(P["S"]) * frac >= 2000 else 2000 / len(P["S"])
             ta = tail_analysis(P, fr)
             ta2 = tails.analyze_tail(P["S"], tail_frac=fr / 10, censored_at=P.get("cens_at"))
@@ -430,11 +352,8 @@ def main():
             w.writeheader()
             w.writerows(tail_rows)
 
-    # ---------------- diagnostics / extrapolation / buffers for selected points
+    # ---------------- buffers for selected points; empirical CCDF for every point
     sel = []
-    for k in [(15, 0.003), (11, 0.003), (15, 0.001), (15, 0.0005)]:
-        if k in mw:
-            sel.append(("mwpm", k, mw[k], f"MWPM surface d={k[0]} p={k[1]:g}"))
     for k in [("144_12_12", 0.003), ("108_8_10", 0.003), ("90_8_10", 0.003), ("72_12_6", 0.003), ("144_12_12", 0.001)]:
         if k in bb:
             sel.append(("relay", k, bb[k], f"Relay-BP [[{k[0].replace('_', ',')}]] p={k[1]:g}"))
@@ -442,23 +361,19 @@ def main():
     for fam, key, P, title in sel:
         ta = allta[(fam, key)]
         tag = f"{fam}_{'_'.join(str(x) for x in key)}"
-        fig_diagnostics(P, ta, f"exp2_diag_{tag}.png", title)
         buffers[tag] = dict(title=title, mean=float(P["S"].mean()), median=float(np.median(P["S"])),
                             best=ta.get("best_aic"), table=buffer_table(P, ta))
     dump(buffers, "exp2_buffers.json")
-    for (fam, key), ta in allta.items():
-        P = (mw if fam == "mwpm" else bb)[key]
-        if P["d"] < 7:
-            continue
-        name = f"MWPM surface d={key[0]}" if fam == "mwpm" else f"Relay-BP {P['label']}"
-        fig_extrapolation(P, ta, f"exp2_extrap_{fam}_{'_'.join(str(x) for x in key)}.png", f"{name} p={key[1]:g}")
+    for key, P in bb.items():
+        fig_ccdf(P["S"], f"exp2_ccdf_relay_{'_'.join(str(x) for x in key)}.png",
+                 f"Relay-BP {P['label']} p={key[1]:g}", xlabel="BP iterations to first solution")
 
     nconv5_analysis(bb)
 
-    # ---------------- Lindley check (D/G/1) for selected points
+    # ---------------- Lindley check (D/G/1) for the first selected point
     if not a.skip_lindley:
         lind = {}
-        for fam, key, P, title in sel[:1] + [s for s in sel if s[0] == "relay"][:1]:
+        for fam, key, P, title in sel[:1]:
             S = P["S"].astype(np.float64)
             thr_med = np.array([5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000])
             thr = thr_med * np.median(S)
