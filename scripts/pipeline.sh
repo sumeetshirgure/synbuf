@@ -31,9 +31,7 @@ for stage in $STAGES; do
       python3 -m synbuf.run_relay --codes 144_12_12 --p 0.003 --shots 20000 --stop-nconv 5 --tag _nconv5 \
         --workers "$N" >> logs/relay.log 2>&1 ;;
     uf)
-      # UF and MWPM side by side with the full bounded-cost counters (data/uf/{uf,mwpm})
-      python3 -m synbuf.run_mwpm --d 11 15 --p 0.001 0.003 --shots $SHOTS --workers "$N" \
-        --outdir data/uf/mwpm >> logs/mwpm_uf.log 2>&1
+      # data/uf; the matching MWPM points come from the mwpm stage (data/mwpm)
       python3 -m synbuf.run_uf --d 11 15 --p 0.001 0.003 --shots $SHOTS --workers "$N" >> logs/uf.log 2>&1 ;;
     *)
       echo "unknown stage: $stage" >&2; exit 1 ;;

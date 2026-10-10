@@ -1,6 +1,7 @@
 """Tail class of decoder work: union-find (ldpc, peeling) vs MWPM (Sparse Blossom), surface code.
 
-Data: data/uf/uf and data/uf/mwpm (synbuf.run_uf / synbuf.run_mwpm --outdir data/uf/mwpm).
+Data: data/uf (synbuf.run_uf) and the matching points of data/mwpm (synbuf.run_mwpm); the MWPM
+files must carry the full counter set (any run with the current PyMatching patch).
 
 Every counter counts bounded-cost operations, so decode time is within constant factors of the
 counter sum S, and the tail class of S is that of its heaviest-tailed component whatever the
@@ -12,9 +13,7 @@ Outputs: results/uf_summary.json, results/uf_tail_fits.{json,csv}, figures/uf_*.
 Usage: PYTHONPATH=. python3 scripts/analyze_uf.py
 """
 import csv
-import glob
 import os
-import re
 import sys
 
 import matplotlib.ticker
@@ -47,7 +46,8 @@ GROUPS = {
     },
 }
 COUNTERS = {"MWPM": MWPM_COUNTERS, "UF": UF_COUNTERS}
-DIRS = {"MWPM": "data/uf/mwpm", "UF": "data/uf/uf"}
+DIRS = {"MWPM": "data/mwpm", "UF": "data/uf"}
+POINTS = [(d, p) for d in (11, 15) for p in (0.001, 0.003)]
 D_COLORS = {11: "#1f77b4", 15: "#d62728"}
 GROUP_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd"]
 TAIL_FRAC = 1e-3
@@ -58,10 +58,14 @@ for dec, groups in GROUPS.items():
 
 def load(dec):
     pts = {}
-    for f in sorted(glob.glob(os.path.join(DIRS[dec], "surface_d*_p*.npz"))):
-        m = re.search(r"d(\d+)_p([0-9.e-]+)\.npz", f)
-        d, p = int(m.group(1)), float(m.group(2))
+    for d, p in POINTS:
+        f = os.path.join(DIRS[dec], f"surface_d{d}_p{p:g}.npz")
+        if not os.path.exists(f):
+            continue
         z = np.load(f)
+        missing = [c for c in COUNTERS[dec] if c not in z]
+        if missing:
+            sys.exit(f"{f} lacks counters {missing}; rerun it with the current decoder patch")
         P = dict(S=z["S"].astype(np.float64), fail=z["fail"], d=d, p=p, label=f"surface d={d}")
         for g, cs in GROUPS[dec].items():
             P[g] = sum(z[c].astype(np.float64) for c in cs)

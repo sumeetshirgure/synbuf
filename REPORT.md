@@ -228,7 +228,8 @@ Outputs:
 Union-find (§7):
 
 ```sh
-scripts/pipeline.sh 14 uf            # data/uf/{uf,mwpm}, d in {11,15}, p in {1e-3, 3e-3}, 1e6 shots each
+scripts/pipeline.sh 14 uf            # data/uf, d in {11,15}, p in {1e-3, 3e-3}, 1e6 shots each
+                                     # (MWPM counterparts: same points in data/mwpm, from the mwpm stage)
 PYTHONPATH=. python3 scripts/analyze_uf.py
 ```
 
@@ -247,14 +248,14 @@ Outputs: `results/uf_summary.json`, `results/uf_tail_fits.{json,csv}`, `figures/
   - **primal:** matcher events, alternating-tree operations (rotations, common-ancestor walks, shattering trees into matches, path pruning), blossom-cycle and blossom-recursion region operations, and detector-node visits caused by growth-rate changes and blossom (un)wrapping;
   - **extraction:** recursive blossom shattering at the end.
 
-  Predictions are bit-identical to stock PyMatching. The data are in `data/uf/mwpm`. The legacy metric of §4–5 ($\text{pq\_pops}+\text{node\_reschedules}$) is stored as `S_legacy` and reproduces `data/mwpm` exactly.
+  Predictions are bit-identical to stock PyMatching. The four points were re-collected into `data/mwpm` with the same seeds. The legacy metric of §4–5 ($\text{pq\_pops}+\text{node\_reschedules}$) is stored as `S_legacy`. It and every other field of the earlier files were reproduced exactly, so §4–5 are unaffected.
 - **UF.** `UnionFindDecoder` from Roffe's `ldpc` (pinned commit `d342996`) in graph (peeling) mode with unweighted growth, which adds all neighbouring bits per step. Validity is the O(1) parity + boundary test. The patch (`third_party/ldpc_uf_op_counters.patch`) replaces upstream's spanning-tree peeler, which aborts on circuit-level surface-code clusters, with the standard peeler on a BFS spanning tree; growth, merging and validity are unchanged. Corrections were checked to reproduce the syndrome exactly. There are four component groups:
   - **growth:** cluster creation, row scans, bit additions and their column visits;
   - **merge:** merges and the nodes copied (ldpc merges by copying hash sets);
   - **validity:** per-round O(1) checks and the size sort;
   - **peel:** spanning-tree construction and peeling.
 
-  Hypergraph (matrix-inversion) UF is out of scope. The data are in `data/uf/uf`.
+  Hypergraph (matrix-inversion) UF is out of scope. The data are in `data/uf`.
 - **Decoding graph and points.** Both decoders use the `decompose_errors=True` DEM of Stim's rotated memory-X circuit with $d$ rounds and uniform circuit-level depolarizing noise. Points are $d\in\{11,15\}$ and $p\in\{10^{-3},3\times10^{-3}\}$, with $10^6$ shots each and the same seeds for both decoders. Collection took about 2 minutes in total with 14 workers.
 
 ### 7.2 Results

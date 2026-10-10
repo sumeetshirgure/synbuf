@@ -136,7 +136,7 @@ if __name__ == "__main__":
     ap.add_argument("--shots", type=int, default=MAX_SHOTS)
     ap.add_argument("--chunk", type=int, default=10_000)
     ap.add_argument("--workers", "-N", type=int, default=4, help="number of worker processes")
-    ap.add_argument("--outdir", default="data/uf/uf")
+    ap.add_argument("--outdir", default="data/uf")
     a = ap.parse_args()
     if a.shots > MAX_SHOTS:
         ap.error(f"--shots is capped at {MAX_SHOTS}")
