@@ -1,0 +1,220 @@
+diff --git a/src_cpp/union_find.hpp b/src_cpp/union_find.hpp
+index d316c5b..56624cc 100644
+--- a/src_cpp/union_find.hpp
++++ b/src_cpp/union_find.hpp
+@@ -23,6 +23,25 @@ namespace ldpc::uf {
+     const std::vector<double> EMPTY_DOUBLE_VECTOR = {};
+     tsl::robin_set<int> EMPTY_INT_ROBIN_SET = {};
+ 
++    // synbuf instrumentation: per-decode cluster-operation counters (reset at the start of each decode).
++    struct OpCounters {
++        uint64_t clusters_created = 0; // singleton clusters created, one per syndrome bit
++        uint64_t growth_rounds = 0;    // iterations of the global grow/merge loop
++        uint64_t cluster_grows = 0;    // grow_cluster calls on active (invalid) clusters
++        uint64_t bits_added = 0;       // bits newly added to a cluster during growth
++        uint64_t merges = 0;           // cluster merges (merge_with_cluster calls)
++        uint64_t merge_moves = 0;      // bit + check nodes copied into the surviving cluster by merges
++        uint64_t cluster_scans = 0;    // clusters inspected by the per-round validity scan
++        uint64_t peel_steps = 0;       // leaf-removal steps of the peeling decoder
++        uint64_t cluster_solves = 0;   // per-cluster GF(2) solves (validity check + correction, matrix mode)
++        void reset() { *this = OpCounters(); }
++    };
++
++    inline OpCounters &op_counters() {
++        static thread_local OpCounters counters;
++        return counters;
++    }
++
+     std::vector<int> sort_indices(std::vector<double> &B) {
+         std::vector<int> indices(B.size());
+         std::iota(indices.begin(), indices.end(), 0);
+@@ -109,7 +128,8 @@ namespace ldpc::uf {
+         int add_bit_node_to_cluster(int bit_index) {
+             auto bit_membership = this->global_bit_membership[bit_index];
+             if (bit_membership == this) return 0; //if the bit is already in the cluster terminate.
+-            else if (bit_membership == NULL) {
++            op_counters().bits_added++;
++            if (bit_membership == NULL) {
+                 //if the bit has not yet been assigned to a cluster we add it.
+                 this->bit_nodes.insert(bit_index);
+                 this->global_bit_membership[bit_index] = this;
+@@ -141,6 +161,8 @@ namespace ldpc::uf {
+         }
+ 
+         void merge_with_cluster(Cluster *cl2) {
++            op_counters().merges++;
++            op_counters().merge_moves += cl2->bit_nodes.size() + cl2->check_nodes.size();
+             for (auto bit_index: cl2->bit_nodes) {
+                 this->bit_nodes.insert(bit_index);
+                 this->global_bit_membership[bit_index] = this;
+@@ -165,6 +187,7 @@ namespace ldpc::uf {
+             if (!this->active) {
+                 return 0;
+             }
++            op_counters().cluster_grows++;
+             this->get_candidate_bit_nodes();
+             this->merge_list.clear();
+ 
+@@ -262,6 +285,7 @@ namespace ldpc::uf {
+             this->find_spanning_tree();
+ 
+             while (!synds.empty()) {
++                op_counters().peel_steps++;
+                 int leaf_node_index = *(this->spanning_tree_leaf_nodes.begin());
+                 int bit_index;
+                 int check2 = -1; //we assume it is a boundary node at first.
+@@ -446,12 +470,14 @@ namespace ldpc::uf {
+                 if (syndrome[i] == 1) {
+                     auto *cl = new Cluster(this->pcm, i, global_check_membership, global_bit_membership,
+                                            this->planar_code_boundary_bits);
++                    op_counters().clusters_created++;
+                     clusters.push_back(cl);
+                     invalid_clusters.push_back(cl);
+                 }
+             }
+ 
+             while (!invalid_clusters.empty()) {
++                op_counters().growth_rounds++;
+                 for (auto cl: invalid_clusters) {
+                     if (cl->active) {
+                         cl->grow_cluster(bit_weights, bits_per_step);
+@@ -459,6 +485,7 @@ namespace ldpc::uf {
+                 }
+ 
+                 invalid_clusters.clear();
++                op_counters().cluster_scans += clusters.size();
+                 for (auto cl: clusters) {
+                     if (cl->active && cl->parity() == 1 && !cl->contains_boundary_bits) {
+                         invalid_clusters.push_back(cl);
+@@ -495,20 +522,24 @@ namespace ldpc::uf {
+             for (auto i = 0; i < this->pcm.m; i++) {
+                 if (syndrome[i] == 1) {
+                     auto *cl = new Cluster(this->pcm, i, global_check_membership, global_bit_membership);
++                    op_counters().clusters_created++;
+                     clusters.push_back(cl);
+                     invalid_clusters.push_back(cl);
+                 }
+             }
+ 
+             while (!invalid_clusters.empty()) {
++                op_counters().growth_rounds++;
+                 for (auto cl: invalid_clusters) {
+                     if (cl->active) {
+                         cl->grow_cluster(bit_weights, bits_per_step);
++                        op_counters().cluster_solves++;
+                         auto cluster_decoding = cl->invert_decode(syndrome, bit_weights);
+                     }
+                 }
+ 
+                 invalid_clusters.clear();
++                op_counters().cluster_scans += clusters.size();
+                 for (auto cl: clusters) {
+                     if (cl->active && !cl->valid) {
+                         invalid_clusters.push_back(cl);
+diff --git a/src_python/ldpc/union_find_decoder/_union_find_decoder.pxd b/src_python/ldpc/union_find_decoder/_union_find_decoder.pxd
+index 98bad54..7f7a7d6 100644
+--- a/src_python/ldpc/union_find_decoder/_union_find_decoder.pxd
++++ b/src_python/ldpc/union_find_decoder/_union_find_decoder.pxd
+@@ -17,6 +17,20 @@ cdef extern from "union_find.hpp" namespace "ldpc::uf":
+ 
+     cdef const vector[double] EMPTY_DOUBLE_VECTOR "ldpc::uf::EMPTY_DOUBLE_VECTOR"
+ 
++    # synbuf instrumentation
++    cdef cppclass OpCounters "ldpc::uf::OpCounters":
++        unsigned long long clusters_created
++        unsigned long long growth_rounds
++        unsigned long long cluster_grows
++        unsigned long long bits_added
++        unsigned long long merges
++        unsigned long long merge_moves
++        unsigned long long cluster_scans
++        unsigned long long peel_steps
++        unsigned long long cluster_solves
++        void reset()
++    OpCounters& op_counters "ldpc::uf::op_counters"()
++
+ cdef class UnionFindDecoder():
+     cdef int m
+     cdef int n
+diff --git a/src_python/ldpc/union_find_decoder/_union_find_decoder.pyx b/src_python/ldpc/union_find_decoder/_union_find_decoder.pyx
+index 550298c..4035e92 100644
+--- a/src_python/ldpc/union_find_decoder/_union_find_decoder.pyx
++++ b/src_python/ldpc/union_find_decoder/_union_find_decoder.pyx
+@@ -162,6 +162,77 @@ cdef class UnionFindDecoder:
+         
+         return out
+ 
++    def decode_batch_with_op_counts(self, syndromes, edge_obs, llrs=None, int bits_per_step=0):
++        """
++        synbuf: decode a batch of syndromes and return per-shot op counters.
++
++        Parameters
++        ----------
++        syndromes : np.ndarray
++            (shots, m) array of syndrome bits (uint8 / bool).
++        edge_obs : np.ndarray
++            (n,) uint64 array; bit k of edge_obs[j] is set if bit j flips logical observable k.
++        llrs : np.ndarray, optional
++            Bit weights used to order cluster growth (see `decode`).
++        bits_per_step : int, optional
++            As in `decode`; 0 adds all neighbouring bits in each growth step.
++
++        Returns
++        -------
++        (np.ndarray, np.ndarray)
++            Predicted observable masks (shots,) uint64 and op counters (shots, 9) uint64 with columns
++            [clusters_created, growth_rounds, cluster_grows, bits_added, merges, merge_moves,
++            cluster_scans, peel_steps, cluster_solves].
++        """
++        cdef np.ndarray[np.uint8_t, ndim=2] syn = np.ascontiguousarray(syndromes, dtype=np.uint8)
++        cdef np.ndarray[np.uint64_t, ndim=1] eo = np.ascontiguousarray(edge_obs, dtype=np.uint64)
++        if syn.shape[1] != self.m:
++            raise ValueError(f"The syndromes must have {self.m} columns. Not {syn.shape[1]}.")
++        if eo.shape[0] != self.n:
++            raise ValueError(f"edge_obs must have length {self.n}. Not {eo.shape[0]}.")
++        cdef Py_ssize_t shots = syn.shape[0]
++        cdef np.ndarray[np.uint64_t, ndim=1] pred = np.zeros(shots, dtype=np.uint64)
++        cdef np.ndarray[np.uint64_t, ndim=2] cnt = np.zeros((shots, 9), dtype=np.uint64)
++        cdef Py_ssize_t s
++        cdef int i
++        cdef bint use_llrs = llrs is not None
++        cdef unsigned long long mask
++        cdef bint nonzero
++        if use_llrs:
++            if not len(llrs) == self.n:
++                raise ValueError(f"The llrs must have length {self.n}. Not {len(llrs)}.")
++            for i in range(self.n):
++                self.uf_llrs[i] = llrs[i]
++        self.bits_per_step = self.n if bits_per_step == 0 else bits_per_step
++        for s in range(shots):
++            op_counters().reset()
++            nonzero = False
++            for i in range(self.m):
++                self._syndrome[i] = syn[s, i]
++                if syn[s, i]:
++                    nonzero = True
++            mask = 0
++            if nonzero:
++                if self.uf_method:
++                    self.ufd.decoding = self.ufd.matrix_decode(self._syndrome, self.uf_llrs if use_llrs else EMPTY_DOUBLE_VECTOR, self.bits_per_step)
++                else:
++                    self.ufd.decoding = self.ufd.peel_decode(self._syndrome, self.uf_llrs if use_llrs else EMPTY_DOUBLE_VECTOR, self.bits_per_step)
++                for i in range(self.n):
++                    if self.ufd.decoding[i]:
++                        mask ^= eo[i]
++            pred[s] = mask
++            c = op_counters()
++            cnt[s, 0] = c.clusters_created
++            cnt[s, 1] = c.growth_rounds
++            cnt[s, 2] = c.cluster_grows
++            cnt[s, 3] = c.bits_added
++            cnt[s, 4] = c.merges
++            cnt[s, 5] = c.merge_moves
++            cnt[s, 6] = c.cluster_scans
++            cnt[s, 7] = c.peel_steps
++            cnt[s, 8] = c.cluster_solves
++        return pred, cnt
++
+     @property
+     def decoding(self):
+ 
