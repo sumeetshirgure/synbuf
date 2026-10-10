@@ -1,7 +1,12 @@
 """Experiment 1/2 data collection for MWPM (instrumented PyMatching) on the rotated surface code.
 
-For every shot records the flooder op counters and the uncapped logical failure indicator.
+For every shot records the op counters and the uncapped logical failure indicator.
 Decodes always run to completion.
+
+Work metrics:
+    S        = sum of all counters in COUNTERS (dual flooder, primal matcher and match extraction);
+               every counter counts bounded-cost operations, see third_party/README.md
+    S_legacy = pq_pops + node_reschedules (the metric used for data/mwpm in REPORT.md §4-5)
 
 Shots are split into batches of `chunk` shots that are decoded by a pool of `workers` processes.
 Batch i is sampled with a seed derived from (seed, i), so results do not depend on `workers`.
@@ -18,6 +23,9 @@ from .circuits import surface_code_circuit
 
 
 MAX_SHOTS = 1_000_000
+COUNTERS = ["pq_pops", "queue_moves", "flood_events", "node_reschedules", "neighbor_scans",  # dual
+            "mwpm_events", "tree_ops", "region_ops", "node_visits",                          # primal
+            "shatter_ops", "extract_ops"]                                                    # extraction
 
 _dem = None
 _graph = None
@@ -35,13 +43,11 @@ def _batch(args):
     n, seed = args
     det, obs, _ = _dem.compile_sampler(seed=seed).sample(n, bit_packed=True)
     pred, cnt = _graph.decode_batch_with_op_counts(det)
-    return dict(
-        pq=cnt[:, 0].astype(np.uint32),
-        flood=cnt[:, 1].astype(np.uint32),
-        mwpm=cnt[:, 2].astype(np.uint32),
-        resched=cnt[:, 3].astype(np.uint32),
-        fail=((pred[:, 0] ^ obs[:, 0]) & 1).astype(bool),
-    )
+    if cnt.shape[1] != len(COUNTERS):
+        raise RuntimeError("pymatching build does not match synbuf's op-counter patch")
+    res = {k: cnt[:, i].astype(np.uint32) for i, k in enumerate(COUNTERS)}
+    res["fail"] = ((pred[:, 0] ^ obs[:, 0]) & 1).astype(bool)
+    return res
 
 
 def run(d, p, shots, out_path, workers=4, chunk=50_000, seed=0):
@@ -55,7 +61,8 @@ def run(d, p, shots, out_path, workers=4, chunk=50_000, seed=0):
         with mp.Pool(min(workers, nchunks), initializer=_init, initargs=(d, p)) as pool:
             parts = pool.map(_batch, tasks, chunksize=1)
     res = {k: np.concatenate([q[k] for q in parts]) for k in parts[0]}
-    res["S"] = (res["pq"].astype(np.uint64) + res["resched"]).astype(np.uint32)
+    res["S"] = sum(res[k].astype(np.uint64) for k in COUNTERS).astype(np.uint32)
+    res["S_legacy"] = (res["pq_pops"].astype(np.uint64) + res["node_reschedules"]).astype(np.uint32)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     np.savez(out_path, d=d, p=p, shots=shots, seconds=time.time() - t0, **res)
     return res, time.time() - t0
@@ -80,4 +87,5 @@ if __name__ == "__main__":
                 continue
             res, dt = run(d, p, a.shots, path, workers=a.workers, chunk=a.chunk, seed=int(d * 100 + p * 1e5))
             print(f"d={d} p={p:g} shots={a.shots} {dt:.0f}s LER={res['fail'].mean():.3e} "
-                  f"S mean={res['S'].mean():.1f} max={res['S'].max()}", flush=True)
+                  f"S mean={res['S'].mean():.1f} max={res['S'].max()} "
+                  f"(S_legacy mean={res['S_legacy'].mean():.1f} max={res['S_legacy'].max()})", flush=True)

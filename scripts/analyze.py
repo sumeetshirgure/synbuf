@@ -59,7 +59,10 @@ def load_mwpm():
         m = re.search(r"d(\d+)_p([0-9.e-]+)\.npz", f)
         d, p = int(m.group(1)), float(m.group(2))
         z = np.load(f)
-        pts[(d, p)] = dict(S=z["S"], pq=z["pq"], fail=z["fail"],
+        # §4-5 use S = pq_pops + node_reschedules; newer runs store it as S_legacy (see run_mwpm.py)
+        S = z["S_legacy"] if "S_legacy" in z else z["S"]
+        pq = z["pq_pops"] if "pq_pops" in z else z["pq"]
+        pts[(d, p)] = dict(S=S, pq=pq, fail=z["fail"],
                            label=f"surface d={d}", d=d, p=p, decoder="MWPM")
     return pts
 

@@ -3,20 +3,20 @@
 For every shot records the union-find cluster-operation counters and the uncapped logical failure
 indicator. Decodes always run to completion.
 
-Decoder: ldpc's UnionFindDecoder (Roffe et al.) in matrix-inversion mode (each cluster is checked and
-solved by GF(2) elimination on its sub-matrix), unweighted growth (all neighbouring bits per step).
-Its peeling mode is not used: on the circuit-level surface-code graph it aborts on clusters with
-several boundary edges (see third_party/README.md).
+Decoder: ldpc's UnionFindDecoder (Roffe et al.) in graph (peeling) mode, unweighted growth (all
+neighbouring bits per step). Validity is the O(1) parity + boundary test; the correction comes from
+peeling a BFS spanning tree of each cluster. synbuf's ldpc patch replaces upstream's spanning-tree
+peeler, which aborts on circuit-level surface-code clusters (see third_party/README.md).
 
 The decoding graph is the one MWPM uses: the DEM is decomposed into graphlike components
 (``decompose_errors=True``); each component is a column of H (weight 2, or weight 1 for a boundary
 edge). Parallel edges with the same detectors and observables are merged by XOR-combining their
 probabilities; parallel edges that differ in observables keep the more likely one.
 
-Work metric (cluster operations):
-    S = clusters_created + cluster_grows + merges
-i.e. singleton clusters created from syndrome bits, growth steps of invalid clusters (each followed by
-one GF(2) validity solve) and cluster merges. The finer counters are stored too.
+Work metric: S = sum of all counters in COUNTERS. Every counter counts bounded-cost operations
+(hash-set operations or sparse-matrix entry visits): cluster creation, growth (row scans, bit
+additions, column visits), merges (nodes copied), validity checks, sorting, spanning-tree
+construction and peeling.
 
 Shots are split into batches of `chunk` shots that are decoded by a pool of `workers` processes.
 Batch i is sampled with a seed derived from (seed, i), so results do not depend on `workers`.
@@ -33,9 +33,9 @@ from .circuits import surface_code_circuit
 
 
 MAX_SHOTS = 1_000_000
-COUNTERS = ["clusters_created", "growth_rounds", "cluster_grows", "bits_added", "merges",
-            "merge_moves", "cluster_scans", "peel_steps", "cluster_solves"]
-S_TERMS = ["clusters_created", "cluster_grows", "merges"]
+COUNTERS = ["clusters_created", "growth_rounds", "cluster_grows", "growth_row_visits", "bit_add_calls",
+            "growth_col_visits", "merges", "merge_moves", "cluster_scans", "sort_compares", "peel_visits",
+            "peel_steps", "cluster_solves"]  # cluster_solves: matrix mode only (always 0 here)
 
 _dem = None
 _decoder = None
@@ -89,7 +89,7 @@ def make_decoder(dem):
     from ldpc.union_find_decoder import UnionFindDecoder
 
     H, edge_obs, _ = dem_to_graph(dem)
-    dec = UnionFindDecoder(H, uf_method="inversion")
+    dec = UnionFindDecoder(H, uf_method="")  # "" selects peeling (any non-empty string selects inversion)
     if not hasattr(dec, "decode_batch_with_op_counts"):
         raise RuntimeError("ldpc is not the synbuf-instrumented build")
     return dec, edge_obs
@@ -105,6 +105,8 @@ def _batch(args):
     n, seed = args
     det, obs, _ = _dem.compile_sampler(seed=seed).sample(n)
     pred, cnt = _decoder.decode_batch_with_op_counts(det, _edge_obs)
+    if cnt.shape[1] != len(COUNTERS):
+        raise RuntimeError("ldpc build does not match synbuf's op-counter patch")
     res = {k: cnt[:, i].astype(np.uint32) for i, k in enumerate(COUNTERS)}
     res["fail"] = (pred & 1).astype(bool) ^ obs[:, 0]
     return res
@@ -121,7 +123,7 @@ def run(d, p, shots, out_path, workers=4, chunk=10_000, seed=0):
         with mp.Pool(min(workers, nchunks), initializer=_init, initargs=(d, p)) as pool:
             parts = pool.map(_batch, tasks, chunksize=1)
     res = {k: np.concatenate([q[k] for q in parts]) for k in parts[0]}
-    res["S"] = sum(res[k].astype(np.uint64) for k in S_TERMS).astype(np.uint32)
+    res["S"] = sum(res[k].astype(np.uint64) for k in COUNTERS).astype(np.uint32)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     np.savez(out_path, d=d, p=p, shots=shots, seconds=time.time() - t0, **res)
     return res, time.time() - t0
@@ -134,7 +136,7 @@ if __name__ == "__main__":
     ap.add_argument("--shots", type=int, default=MAX_SHOTS)
     ap.add_argument("--chunk", type=int, default=10_000)
     ap.add_argument("--workers", "-N", type=int, default=4, help="number of worker processes")
-    ap.add_argument("--outdir", default="data/uf")
+    ap.add_argument("--outdir", default="data/uf/uf")
     a = ap.parse_args()
     if a.shots > MAX_SHOTS:
         ap.error(f"--shots is capped at {MAX_SHOTS}")

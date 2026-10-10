@@ -9,7 +9,7 @@
 3. **MWPM work has a mildly heavy tail.** At $d=7$ the tail is close to the Gumbel domain (lognormal-like, GPD shape $\xi\approx0.04$–$0.12$). At $d=11$ and $15$ it is Pareto-type with $\xi\approx0.14$–$0.28$ (Pareto $\alpha\approx5.7$–$9.7$). The fitted tails imply modest buffers: tens to a few hundred median decodes for a sliding window at $\varepsilon=10^{-12}$, and under 15 median decodes with 2 spare servers.
 4. **Relay-BP work has a much heavier, power-law tail that grows heavier with $p$.** $\xi$ ranges from about 0.05–0.4 at $p=5\times10^{-4}$, through 0.34–0.94 at $10^{-3}$, to above 1 at $3\times10^{-3}$ for the three codes with $d\ge10$ ($\alpha\approx0.74$–$1.01$). A fit at a 10× higher threshold gives $\xi\approx0.84$–$1.15$ there, so the tail sits at or near the infinite-mean boundary rather than clearly beyond it. With $\alpha\le1$ the leading-order buffer formulas diverge, and a D/G/1 Lindley simulation of [[144,12,12]] at $p=3\times10^{-3}$ spends about a quarter of its time draining single huge decodes even at load $\rho=0.5$. Spare servers (parallel windows) shrink the Pareto-tail buffer by orders of magnitude where the formulas still apply.
 
-5. **Union-find (ldpc) work, counted in cluster operations, is light-tailed** ([§7](#7-union-find-decoder-ldpc-work-distribution)). At $d\in\{11,15\}$ and $p\in\{10^{-3},3\times10^{-3}\}$, the GPD shape is $\xi\approx-0.1$ (bounded-type tail), the maximum is at most 3.3× the median, and the $\varepsilon=10^{-12}$ buffer is 2–4 median decodes. Counted per node touched, ldpc's merge-by-copy makes the tail Gumbel-like (max up to 13× the median). This UF variant is much less accurate than MWPM: about 34× and 200× higher LER at $p=3\times10^{-3}$ for $d=11$ and $d=15$.
+5. **With all bounded-cost operations counted, union-find has a lighter tail than MWPM, and MWPM's heaviest tail comes from its primal (matching) side** ([§7](#7-union-find-decoder-ldpc-vs-mwpm-full-operation-counts)). At $d\in\{11,15\}$ and $p\in\{10^{-3},3\times10^{-3}\}$, MWPM's total work has $\xi\approx0.17$–$0.31$ (Pareto-type) and a maximum of 8–12× the median. Its primal work is only about 10% of the mean but has the heaviest tail ($\xi\approx0.21$–$0.45$, rising with $p$ and $d$). Peeling UF has $\xi\approx0.14$ at $p=10^{-3}$, $\xi\approx0$ at $p=3\times10^{-3}$, and a maximum of 4–6× the median. This UF variant is much less accurate than MWPM: about 36× and 210× higher LER at $p=3\times10^{-3}$ for $d=11$ and $d=15$.
 
 ## 2. What was and was not run
 
@@ -228,50 +228,79 @@ Outputs:
 Union-find (§7):
 
 ```sh
-scripts/pipeline.sh 14 uf            # data/uf/, d in {11,15}, p in {1e-3, 3e-3}, 1e6 shots each
+scripts/pipeline.sh 14 uf            # data/uf/{uf,mwpm}, d in {11,15}, p in {1e-3, 3e-3}, 1e6 shots each
 PYTHONPATH=. python3 scripts/analyze_uf.py
 ```
 
-Outputs: `results/uf_summary.json`, `results/uf_tail_fits.{json,csv}`, `results/uf_buffers.json`,
-`figures/uf_ccdf_vs_mwpm.png`, `figures/uf_diag_*.png`, `figures/uf_extrap_*.png`.
+Outputs: `results/uf_summary.json`, `results/uf_tail_fits.{json,csv}`, `figures/uf_ccdf_vs_mwpm.png`,
+`figures/uf_components_{mwpm,uf}.png`, `figures/uf_diag_*.png`, `figures/uf_extrap_*.png`.
 
-## 7. Union-find decoder (ldpc): work distribution
+## 7. Union-find decoder (ldpc) vs MWPM: full operation counts
 
-*Added 2026-10-10. Tail characterization only; no capping experiment was run for UF.*
+*Added 2026-10-10. Tail class only. No capping experiment was run, and no per-operation cost constants (or buffer sizes in absolute units) are estimated.*
 
 ### 7.1 Setup
 
-- **Decoder.** `UnionFindDecoder` from Roffe's `ldpc` package (pinned commit `d342996`, see `third_party/README.md`), instrumented with per-decode cluster-operation counters (`third_party/ldpc_uf_op_counters.patch`). The algorithm is unchanged.
-- **Mode.** Matrix-inversion mode with unweighted growth (all neighbouring bits per step). Each grown cluster is checked and solved by GF(2) elimination on its sub-matrix. The peeling mode was not usable: on the circuit-level graph it aborts (`Iterator index out of bounds`) on clusters that touch several boundary edges. Weighted growth (`llrs`, `bits_per_step`=1, 4, 16) gave a *higher* LER than unweighted growth in a pilot run at $d=5$, so it was not used.
-- **Decoding graph.** Same as MWPM: the `decompose_errors=True` DEM of Stim's rotated memory-X circuit, $d$ rounds, uniform circuit-level depolarizing noise. Each graphlike component is a column of $H$ (weight 1 for a boundary edge).
-- **Points.** $d\in\{11,15\}$, $p\in\{10^{-3},3\times10^{-3}\}$, $10^6$ shots each (`synbuf/run_uf.py`). Total collection time was about 3 minutes with 14 workers.
-- **Work metric.** $S$ = number of cluster operations = singleton clusters created (one per syndrome bit) + growth steps of invalid clusters (each followed by one validity solve) + cluster merges. As a cross-check the analysis also uses a node-level cost $W$ = bits added to clusters + nodes copied by merges. ldpc merges clusters by copying hash sets rather than through a disjoint-set forest, so $W$ is closer to the implementation's actual memory traffic.
+- **Work model.** Every counter counts operations of bounded cost: O(1), or bounded by the fixed maximum degree of the decoding graph. Decode time is then within constant factors of the counter sum $S$. Because $c_{\min}\max_i N_i \le T \le k\,c_{\max}\max_i N_i$ holds for every decode, whatever the dependence between components, the tail class of $S$ (and of the time $T$) is that of its heaviest-tailed component, whatever the per-counter costs. So we fit the tail of $S$ and of each component group.
+- **MWPM.** PyMatching (Sparse Blossom) with the extended op-counter patch (`third_party/pymatching_op_counters.patch`). There are three component groups:
+  - **dual:** priority-queue pops (including stale events), radix-heap refill moves, flood events, node reschedules and their neighbour scans;
+  - **primal:** matcher events, alternating-tree operations (rotations, common-ancestor walks, shattering trees into matches, path pruning), blossom-cycle and blossom-recursion region operations, and detector-node visits caused by growth-rate changes and blossom (un)wrapping;
+  - **extraction:** recursive blossom shattering at the end.
+
+  Predictions are bit-identical to stock PyMatching. The data are in `data/uf/mwpm`. The legacy metric of §4–5 ($\text{pq\_pops}+\text{node\_reschedules}$) is stored as `S_legacy` and reproduces `data/mwpm` exactly.
+- **UF.** `UnionFindDecoder` from Roffe's `ldpc` (pinned commit `d342996`) in graph (peeling) mode with unweighted growth, which adds all neighbouring bits per step. Validity is the O(1) parity + boundary test. The patch (`third_party/ldpc_uf_op_counters.patch`) replaces upstream's spanning-tree peeler, which aborts on circuit-level surface-code clusters, with the standard peeler on a BFS spanning tree; growth, merging and validity are unchanged. Corrections were checked to reproduce the syndrome exactly. There are four component groups:
+  - **growth:** cluster creation, row scans, bit additions and their column visits;
+  - **merge:** merges and the nodes copied (ldpc merges by copying hash sets);
+  - **validity:** per-round O(1) checks and the size sort;
+  - **peel:** spanning-tree construction and peeling.
+
+  Hypergraph (matrix-inversion) UF is out of scope. The data are in `data/uf/uf`.
+- **Decoding graph and points.** Both decoders use the `decompose_errors=True` DEM of Stim's rotated memory-X circuit with $d$ rounds and uniform circuit-level depolarizing noise. Points are $d\in\{11,15\}$ and $p\in\{10^{-3},3\times10^{-3}\}$, with $10^6$ shots each and the same seeds for both decoders. Collection took about 2 minutes in total with 14 workers.
 
 ### 7.2 Results
 
-| $d$ | $p$ | UF LER | MWPM LER | mean $S$ | median $S$ | max $S$ | max/median: UF $S$ | max/median: MWPM | max/median: UF $W$ |
-|---|---|---|---|---|---|---|---|---|---|
-| 11 | 1e-3 | $1.9\times10^{-5}$ | $0$ (0/10⁶) | 47.3 | 46 | 153 | 3.3 | 10.1 | 13.0 |
-| 15 | 1e-3 | $0$ (0/10⁶) | $0$ (0/10⁶) | 124.8 | 124 | 286 | 2.3 | 7.3 | 6.5 |
-| 11 | 3e-3 | $1.0\times10^{-2}$ | $2.9\times10^{-4}$ | 146.7 | 145 | 312 | 2.2 | 10.4 | 11.3 |
-| 15 | 3e-3 | $7.4\times10^{-3}$ | $3.7\times10^{-5}$ | 388.6 | 387 | 660 | 1.7 | 8.0 | 8.4 |
+| $d$ | $p$ | UF LER | MWPM LER | MWPM: median $S$, max/median | MWPM share of mean (dual / primal / extraction) | UF: median $S$, max/median | UF share of mean (growth / merge / validity / peel) |
+|---|---|---|---|---|---|---|---|
+| 11 | 1e-3 | $1.3\times10^{-5}$ | $0$ (0/10⁶) | 935, 10.9 | 0.88 / 0.10 / 0.03 | 2594, 6.2 | 0.20 / 0.05 / 0.01 / 0.74 |
+| 15 | 1e-3 | $0$ (0/10⁶) | $0$ (0/10⁶) | 2644, 7.7 | 0.88 / 0.10 / 0.02 | 7310, 3.9 | 0.20 / 0.05 / 0.01 / 0.75 |
+| 11 | 3e-3 | $1.0\times10^{-2}$ | $2.9\times10^{-4}$ | 3408, 12.5 | 0.88 / 0.10 / 0.02 | 8313, 4.3 | 0.19 / 0.14 / 0.01 / 0.66 |
+| 15 | 3e-3 | $7.9\times10^{-3}$ | $3.7\times10^{-5}$ | 9724, 10.4 | 0.89 / 0.09 / 0.02 | 23977, 3.8 | 0.18 / 0.16 / 0.01 / 0.64 |
 
-Tail fits use the same pipeline and threshold as MWPM (top $10^{-3}$, about 1000 exceedances):
+The two decoders' $S$ values are in different units and are not comparable with each other; only their shapes are.
 
-| $d$ | $p$ | GPD $\xi$ (95% CI) | $\xi$ at 10× higher threshold | best AIC | lognormal $\sigma$ | node cost $W$: $\xi$ (95% CI) |
+Tail fits use the same pipeline as §5 (threshold at the top $10^{-3}$, about 1000 exceedances). Each entry is the GPD shape $\xi$ with its 95% bootstrap CI, then in brackets $\xi$ at a 10× higher threshold.
+
+| $d$ | $p$ | MWPM $S$ | MWPM dual | MWPM primal | MWPM extraction |
+|---|---|---|---|---|---|
+| 11 | 1e-3 | 0.23 (0.16, 0.28) [0.26] | 0.20 (0.15, 0.26) [0.21] | 0.21 (0.17, 0.26) [0.15] | −0.07 (−0.10, −0.03) |
+| 15 | 1e-3 | 0.17 (0.12, 0.22) [0.20] | 0.17 (0.12, 0.22) [0.26] | 0.24 (0.17, 0.28) [0.26] | −0.04 (−0.10, 0.01) |
+| 11 | 3e-3 | 0.23 (0.18, 0.28) [0.18] | 0.20 (0.16, 0.26) [0.13] | **0.37** (0.33, 0.44) [0.30] | −0.02 (−0.06, 0.02) |
+| 15 | 3e-3 | 0.31 (0.28, 0.36) [0.18] | 0.27 (0.22, 0.33) [0.12] | **0.45** (0.39, 0.53) [0.25] | −0.02 (−0.06, 0.01) |
+
+| $d$ | $p$ | UF $S$ | UF growth | UF merge | UF validity | UF peel |
 |---|---|---|---|---|---|---|
-| 11 | 1e-3 | −0.105 (−0.143, −0.076) | −0.095 | lognormal | 0.120 | 0.031 (−0.043, 0.093) |
-| 15 | 1e-3 | −0.083 (−0.120, −0.053) | −0.052 | lognormal | 0.110 | 0.042 (−0.023, 0.096) |
-| 11 | 3e-3 | −0.106 (−0.146, −0.073) | −0.124 | lognormal | 0.097 | 0.047 (−0.021, 0.102) |
-| 15 | 3e-3 | −0.104 (−0.149, −0.067) | −0.048 | lognormal | 0.068 | 0.042 (−0.028, 0.109) |
+| 11 | 1e-3 | 0.15 (0.10, 0.19) [0.09] | 0.13 (0.07, 0.18) [0.06] | 0.08 (0.03, 0.14) | −0.13 | 0.13 (0.09, 0.19) [0.04] |
+| 15 | 1e-3 | 0.14 (0.09, 0.19) [0.26] | 0.17 (0.11, 0.23) [0.27] | 0.06 (0.02, 0.10) | 0.00 | 0.10 (0.06, 0.14) [0.27] |
+| 11 | 3e-3 | −0.01 (−0.05, 0.03) [−0.20] | 0.01 (−0.04, 0.06) [−0.09] | 0.02 (−0.02, 0.06) | 0.04 | −0.03 (−0.07, 0.01) [−0.18] |
+| 15 | 3e-3 | 0.04 (−0.00, 0.08) [−0.05] | 0.10 (0.06, 0.14) [0.09] | 0.05 (0.00, 0.09) | −0.17 | 0.04 (−0.00, 0.08) [−0.09] |
 
-Buffer at $\varepsilon=10^{-12}$ in median decodes ($\rho=0.5$, lognormal tail spliced onto the empirical bulk, `results/uf_buffers.json`): 4.2 / 2.9 / 2.7 / 1.9 for D/G/1 at ($d$,$p$) = (11,1e-3) / (15,1e-3) / (11,3e-3) / (15,3e-3). With two spare servers these fall to 3.0 / 2.1 / 2.0 / 1.6. The exponential fit gives slightly larger values (5.5 / 3.5 / 3.2 / 2.3 for D/G/1).
+The best AIC model for $S$ is Pareto at all four MWPM points and at the two UF points with $p=10^{-3}$. At the UF points with $p=3\times10^{-3}$ it is exponential ($d=11$) and lognormal ($d=15$). All fits, Vuong tests and per-counter means and maxima are in `results/uf_tail_fits.csv` and `results/uf_summary.json`.
 
-Figures: `figures/uf_ccdf_vs_mwpm.png` (UF and MWPM survival functions, normalized by their medians), `figures/uf_diag_*.png` (the three straight-line diagnostics) and `figures/uf_extrap_*.png` (tail fits extrapolated to $10^{-15}$).
+Figures:
+- `figures/uf_ccdf_vs_mwpm.png`: survival functions of $S$, normalized by the median;
+- `figures/uf_components_{mwpm,uf}.png`: each component group against the total;
+- `figures/uf_diag_*.png` and `figures/uf_extrap_*.png`: diagnostics and fitted tails for $S$.
 
 ### 7.3 Findings
 
-- **The cluster-operation count has a light, bounded-type tail.** $\xi<0$ with the whole 95% CI below 0 at all four points (Weibull domain). The worst of $10^6$ decodes is only 1.7–3.3× the median, against 7–10× for MWPM's operation count at the same points. The tail also gets *relatively* lighter as $d$ and $p$ grow. $S$ has a rank correlation of 0.99 with the number of syndrome bits, so its distribution essentially follows the detection-event count, which is a sum of many independent Bernoulli variables. The resulting buffer is only a few median decodes at $\varepsilon=10^{-12}$.
-- **At node granularity the tail is heavier.** $W$ (bits added + nodes copied by merges) reaches 6.5–13× its median, with $\xi\approx0.03$–$0.05$ and a CI that includes 0 (Gumbel domain, exponential or lognormal). That is comparable to MWPM at $d=7$. The extra spread comes from merges of large clusters, which copy their node sets in this implementation. A disjoint-set-forest UF with union by size would bound that cost. So the light tail is a property of the cluster-level operation count, and of a UF implementation whose merges are near-constant time, not of ldpc's merge-by-copy.
-- **Accuracy caveat.** This UF variant is far less accurate than MWPM under circuit-level noise: 34× (d=11) and 200× (d=15) higher LER at $p=3\times10^{-3}$. Part of this is unweighted growth and part is that inversion mode returns an arbitrary rather than a minimum-weight correction within each cluster. $p=3\times10^{-3}$ is close to this decoder's threshold: the LER only falls from $1.0\times10^{-2}$ to $7.4\times10^{-3}$ between $d=11$ and $d=15$.
-- **Statistics caveat.** With $10^6$ shots the fits describe the distribution down to about $10^{-6}$. The extrapolations to $10^{-12}$ in the buffer table assume the fitted class continues beyond that.
+- **MWPM's heaviest tail is on the primal side.** Primal work (alternating trees, blossoms and the region-wide updates they trigger) is only about 10% of the mean but has the heaviest tail. At $p=3\times10^{-3}$, its $\xi=0.37$–$0.45$ (Pareto $\alpha=1/\xi\approx2.2$–$2.7$) against 0.20–0.27 for the dual. Its tail also gets heavier with $p$ and $d$. The ordering persists at the higher threshold (0.25–0.30 against 0.12–0.13). Within the observed range ($\ge10^{-6}$), $S$ is dominated by the dual, so the fit to $S$ itself gives a smaller $\xi$ (0.17–0.31). Asymptotically, by the bound above, the primal component sets the tail class of MWPM work.
+- **The §4–5 metric understates MWPM's tail.** It counts only PQ pops and reschedules. It sees primal events only through the reschedules they trigger, and misses the alternating-tree bookkeeping, blossom-cycle work and node visits of shrinking regions. It is mostly a dual metric. For capping and buffer conclusions at large $d$ and $p$, the primal tail should be used instead.
+- **UF's tail is lighter than MWPM's at every point, and lightens with $p$.**
+  - The worst of $10^6$ UF decodes is 3.8–6.2× the median, against 7.7–12.5× for MWPM.
+  - At $p=10^{-3}$, UF's $\xi\approx0.14$–$0.15$ (CI above 0, so a mildly heavy, Pareto-type tail with $\alpha\approx7$).
+  - At $p=3\times10^{-3}$, $\xi\approx0$ (CI includes 0; Gumbel domain).
+  - The opposite $p$ trends make sense. UF's work is a sum over many fairly independent clusters, which smooths out as the number of defects grows, while MWPM's primal work concentrates in large alternating trees and blossoms, which become more common as $p$ grows.
+  - Among UF's components, growth (cluster-boundary scans) usually has the largest $\xi$. Peeling dominates the mean (64–75%). The higher-threshold fits move UF's $\xi$ by up to about 0.1–0.2 (for example, $S$ at $d=15$, $p=10^{-3}$: 0.14 → 0.26), so the ordering of UF's components is not well resolved. The robust statement is $\xi\lesssim0.25$ at $p=10^{-3}$ and $\xi\approx0$ at $p=3\times10^{-3}$.
+- **This supersedes the earlier cluster-operation result.** The earlier version of this section found a bounded-type tail ($\xi\approx-0.1$). That metric charged one unit per cluster-level event, regardless of cluster size. It was a light-tailed artifact of following the detection-event count.
+- **Accuracy caveat.** This UF variant is far less accurate than MWPM under circuit-level noise: about 36× ($d=11$) and 210× ($d=15$) higher LER at $p=3\times10^{-3}$. Contributing causes are unweighted growth by full edges and peeling corrections that are not minimum-weight. $p=3\times10^{-3}$ is close to this decoder's threshold: its LER only falls from $1.0\times10^{-2}$ to $7.9\times10^{-3}$ between $d=11$ and $d=15$.
+- **Statistics caveat.** With $10^6$ shots the fits describe the distribution down to about $10^{-6}$. Statements about tail classes beyond that level assume the fitted class continues.
