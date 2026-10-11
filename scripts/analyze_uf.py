@@ -6,8 +6,8 @@ files must carry the full counter set (any run with the current PyMatching patch
 Every counter counts bounded-cost operations, so decode time is within constant factors of the
 counter sum S, and the tail class of S is that of its heaviest-tailed component whatever the
 per-counter costs. The analysis therefore fits the tail of S and of each component group (dual /
-primal / extraction for MWPM; growth / merge / validity / peel for UF) and reports tail classes
-only; no per-operation cost constants are used.
+primal / extraction for MWPM; growth / merge / validity / peel for UF) with a GPD and reports the
+shape xi (profile-likelihood 95% CI, LR test of xi = 0); no per-operation cost constants are used.
 
 Outputs: results/uf_summary.json, results/uf_tail_fits.{json,csv}, figures/uf_*.png.
 Usage: PYTHONPATH=. python3 scripts/analyze_uf.py
@@ -26,7 +26,7 @@ except ImportError:
     import types
     sys.modules["relay_bp"] = types.ModuleType("relay_bp")
 import analyze as an  # noqa: E402
-from analyze import FIG, RES, MODEL_NAMES, dump, plt  # noqa: E402
+from analyze import FIG, RES, dump, plt  # noqa: E402
 from synbuf import exp1, tails  # noqa: E402
 from synbuf.run_mwpm import COUNTERS as MWPM_COUNTERS  # noqa: E402
 from synbuf.run_uf import COUNTERS as UF_COUNTERS  # noqa: E402
@@ -75,17 +75,14 @@ def load(dec):
 
 
 def fit(x, frac=TAIL_FRAC):
-    """Tail fit of samples x at the (1-frac) quantile (same settings as the MWPM fits in analyze.py)."""
+    """GPD tail fit of samples x at the (1-frac) quantile, and again at a 10x higher threshold."""
     fr = frac if len(x) * frac >= 2000 else 2000 / len(x)
     ta = tails.analyze_tail(x, tail_frac=fr)
-    out = dict(u=ta["u"], n_exceed=ta["n_exceed"], best_aic=ta.get("best_aic"),
-               xi=(ta.get("gpd") or {}).get("xi"), xi_ci=(ta.get("gpd") or {}).get("xi_ci"),
-               params={k: v["params"] for k, v in ta.get("fits", {}).items()}, aic=ta.get("aic"),
-               vuong=ta.get("vuong"))
     hi = tails.analyze_tail(x, tail_frac=fr / 10)
-    out["xi_high_u"] = (hi.get("gpd") or {}).get("xi")
-    out["best_aic_high_u"] = hi.get("best_aic")
-    return out
+    g, g2 = ta["gpd"], hi["gpd"]
+    return dict(u=ta["u"], n_exceed=ta["n_exceed"], xi=g["xi"], xi_ci=g["xi_ci"], scale=g["scale"],
+                lr_exp=g["lr_exp"], u_high=hi["u"], n_exceed_high=hi["n_exceed"], xi_high=g2["xi"],
+                xi_ci_high=g2["xi_ci"], lr_exp_high=g2["lr_exp"])
 
 
 def describe(x):
@@ -167,36 +164,32 @@ def main():
                 fr = fit(x)
                 fits[metric] = fr
                 desc = entry["S"] if metric == "S" else entry["components"][metric]
-                row = dict(decoder=dec, d=d, p=p, metric=metric, median=desc["median"], mean=desc["mean"],
-                           max_over_median=desc["max_over_median"], u=fr["u"], n_exceed=fr["n_exceed"], best_aic=fr["best_aic"], xi=fr["xi"],
-                           xi_lo=(fr["xi_ci"] or [None, None])[0], xi_hi=(fr["xi_ci"] or [None, None])[1],
-                           xi_high_u=fr["xi_high_u"], best_aic_high_u=fr["best_aic_high_u"])
-                for name in MODEL_NAMES:
-                    if name in fr["params"]:
-                        for pk, pv in fr["params"][name].items():
-                            row[f"{name}_{pk}"] = pv
-                        row[f"{name}_aic"] = fr["aic"][name]
-                rows.append(row)
+                rows.append(dict(decoder=dec, d=d, p=p, metric=metric, median=desc["median"], mean=desc["mean"],
+                                 max_over_median=desc["max_over_median"], u=fr["u"], n_exceed=fr["n_exceed"],
+                                 xi=fr["xi"], xi_lo=fr["xi_ci"][0], xi_hi=fr["xi_ci"][1], scale=fr["scale"],
+                                 lr_exp_stat=fr["lr_exp"]["stat"], lr_exp_p=fr["lr_exp"]["p"],
+                                 u_high=fr["u_high"], n_exceed_high=fr["n_exceed_high"], xi_high=fr["xi_high"],
+                                 xi_lo_high=fr["xi_ci_high"][0], xi_hi_high=fr["xi_ci_high"][1],
+                                 lr_exp_p_high=fr["lr_exp_high"]["p"]))
                 if metric == "S":
                     an.fig_ccdf(x, f"uf_ccdf_{dec.lower()}_{d}_{p:g}.png",
                                 f"{dec} surface d={d} p={p:g}: total work S", xlabel="S (operations)")
-            comp = [g for g in GROUPS[dec] if g in fits and fits[g]["xi"] is not None]
+            comp = [g for g in GROUPS[dec] if g in fits]
             heaviest = max(comp, key=lambda g: fits[g]["xi"])
-            entry["tail"] = dict(S=fits["S"], heaviest_component=heaviest,
-                                 components={g: {k: fits[g][k] for k in ("best_aic", "xi", "xi_ci", "xi_high_u")}
-                                             for g in comp})
+            entry["tail"] = dict(S=fits["S"], heaviest_component=heaviest, components={g: fits[g] for g in comp})
             summary[f"{dec}_d{d}_p{p:g}"] = entry
             cx = ", ".join(f"{g} {fits[g]['xi']:+.3f}" for g in comp)
+            fS = fits["S"]
             print(f"{dec:4s} d={d} p={p:g}: LER={entry['ler']:.2e} S median={entry['S']['median']:.0f} "
-                  f"max/med={entry['S']['max_over_median']:.2f} xi(S)={fits['S']['xi']:+.3f} "
-                  f"[{fits['S']['xi_ci'][0]:+.3f},{fits['S']['xi_ci'][1]:+.3f}] best={fits['S']['best_aic']} | {cx}",
+                  f"max/med={entry['S']['max_over_median']:.2f} xi(S)={fS['xi']:+.3f} "
+                  f"[{fS['xi_ci'][0]:+.3f},{fS['xi_ci'][1]:+.3f}] LR(xi=0) p={fS['lr_exp']['p']:.2g} | {cx}",
                   flush=True)
         fig_components(dec, pts)
     fig_ccdf(data)
 
     dump(summary, "uf_summary.json")
     dump(rows, "uf_tail_fits.json")
-    cols = sorted({k for r in rows for k in r}, key=lambda c: (c not in ("decoder", "d", "p", "metric"), c))
+    cols = list(rows[0])
     with open(os.path.join(RES, "uf_tail_fits.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()

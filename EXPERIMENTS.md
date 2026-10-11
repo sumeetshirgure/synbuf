@@ -119,18 +119,21 @@ Takeaways:
 - **Lognormal at $\varepsilon=10^{-12}$:** $z\approx 7.0$, so the buffer is about $e^{7\sigma}$ median decodes. That is roughly 8× for $\sigma=0.3$, 33× for $\sigma=0.5$, and 1100× for $\sigma=1$. With $m=3$ spare servers, $\sigma=1$ drops to about 40×.
 - **PWD changes the constant, not the class**, except that for a Pareto tail it divides the polynomial exponent by $m$. A fat tail is where parallel windows help most.
 
-### Diagnostics
-For each $(d,p)$, apply the diagnostics below to the empirical complementary CDF $\bar F(x) = P(S>x)$:
+### Plots
+For each $(d,p)$, plot the empirical complementary CDF $\bar F(x) = P(S>x)$ on log-log axes, without fitted curves.
 
-| Diagnostic | Straight line indicates |
-|---|---|
-| $\log \bar F$ vs $x$ | exponential |
-| Normal Q–Q plot of $\log S$ | lognormal |
-| $\log \bar F$ vs $\log x$ | Pareto; the slope gives $-\alpha$ |
+### Fitting and tests
+- **Peaks over threshold.** Fit a generalized Pareto distribution GPD$(\xi,\sigma)$ by maximum likelihood to the excesses above a high threshold $u$, and report the shape $\xi$ as the tail parameter:
+  - $\xi>0$: a heavy tail, $\bar F(x)\sim x^{-1/\xi}$;
+  - $\xi=0$: exponential;
+  - $\xi<0$: bounded.
 
-### Fitting and model selection
-- **Peaks over threshold.** Fit a generalized Pareto distribution above a high threshold $u$. A shape $\xi>0$ indicates a Pareto-type tail; $\xi \approx 0$ indicates the Gumbel domain (exponential, lognormal).
-- **MLE fits** of each candidate on the tail above $u$, compared with likelihood-ratio (Vuong) tests in the style of Clauset–Shalizi–Newman. Report all fits, not just the winner.
+  Lognormal and Pareto are deliberately not distinguished: at any finite threshold both give $\xi>0$, and for buffer sizing the power-law reading is the conservative one.
+- **Tests.** Only likelihood-ratio procedures:
+  - a test of $\xi=0$ (exponential tail) against free $\xi$, with a $\chi^2_1$ null distribution;
+  - a profile-likelihood (inverted likelihood-ratio) 95% confidence interval for $\xi$.
+
+  Refit at a 10× higher threshold to check stability.
 - **Censoring.** If any decodes hit the (relaxed) Relay-BP limit, use a censored likelihood. Better still, raise the limit until the censored fraction is far below the tail probabilities being fitted.
 
 ### Hypotheses

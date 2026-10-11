@@ -32,7 +32,6 @@ RES, FIG = "results", "figures"
 os.makedirs(RES, exist_ok=True)
 os.makedirs(FIG, exist_ok=True)
 EPS_GRID = np.logspace(-6, -15, 10)
-MODEL_NAMES = ["exponential", "lognormal", "pareto"]
 plt.rcParams.update({"font.size": 9, "figure.dpi": 130, "axes.grid": True, "grid.alpha": 0.3})
 
 
@@ -258,7 +257,7 @@ def _buffer_rows(sf_tail, S, u, rho, ms, isf=None):
 
 
 def buffer_table(P, ta, rho=0.5, ms=(1, 2, 3)):
-    """Buffer requirements from each fitted tail model, spliced onto the empirical bulk below u.
+    """Buffer requirements from the fitted GPD tail, spliced onto the empirical bulk below u.
 
     x_m1: D/G/1 (sliding window), solves rho/(1-rho) * Fbar_I(x) = eps   (Veraverbeke)
     x_mK: D/G/k with K spare servers, solves Fbar_I(x)^K = eps           (Foss-Korshunov, leading order)
@@ -266,20 +265,13 @@ def buffer_table(P, ta, rho=0.5, ms=(1, 2, 3)):
     """
     S = P["S"].astype(np.float64)
     u, pu = ta["u"] + 0.5, ta["pu"]
-    out = {}
-    for name in list(ta["fits"]) + (["gpd"] if "xi" in ta.get("gpd", {}) else []):
-        params = ta["fits"][name]["params"] if name != "gpd" else ta["gpd"]
-        if name == "pareto" and params["alpha"] <= 1:
-            out[name] = dict(note="alpha<=1: infinite mean, integrated tail diverges")
-            continue
-        if name == "gpd" and params["xi"] >= 1:
-            out[name] = dict(note="xi>=1: infinite mean")
-            continue
-        sf = lambda x, name=name, params=params: float(tails.model_sf(name, params, x, u, pu))
-        isf = lambda e, name=name, params=params: tails.model_isf(name, params, e, u, pu)
-        rows = _buffer_rows(sf, S, u, rho, ms, isf=isf)
-        out[name] = rows if rows is not None else dict(note="integrated tail diverges")
-    return out
+    params = ta["gpd"]
+    if params["xi"] >= 1:
+        return dict(note="xi>=1: infinite mean, integrated tail diverges")
+    sf = lambda x: float(tails.gpd_sf(params, x, u, pu))
+    isf = lambda e: tails.gpd_isf(params, e, u, pu)
+    rows = _buffer_rows(sf, S, u, rho, ms, isf=isf)
+    return rows if rows is not None else dict(note="integrated tail diverges")
 
 
 def fig_ccdf(S, fname, title, xlabel="S (work units)"):
@@ -323,30 +315,21 @@ def main():
             fr = frac if len(P["S"]) * frac >= 2000 else 2000 / len(P["S"])
             ta = tail_analysis(P, fr)
             ta2 = tails.analyze_tail(P["S"], tail_frac=fr / 10, censored_at=P.get("cens_at"))
-            ta["robust_threshold"] = dict(u=ta2["u"], n_exceed=ta2["n_exceed"], best_aic=ta2.get("best_aic"),
-                                          gpd=ta2.get("gpd"),
-                                          params={k: v["params"] for k, v in ta2.get("fits", {}).items()})
+            ta["high_threshold"] = dict(u=ta2["u"], n_exceed=ta2["n_exceed"], gpd=ta2.get("gpd"))
             allta[(fam, key)] = ta
+            g, g2 = ta["gpd"], ta2["gpd"]
             row = dict(family=fam, point=P["label"], d=P["d"], p=P["p"], n=ta["n"], mean=ta["mean"],
-                       median=ta["median"], u=ta["u"], n_exceed=ta["n_exceed"], best_aic=ta.get("best_aic"),
-                       xi=ta.get("gpd", {}).get("xi"), xi_lo=ta.get("gpd", {}).get("xi_ci", [None, None])[0],
-                       xi_hi=ta.get("gpd", {}).get("xi_ci", [None, None])[1],
-                       xi_high_u=(ta2.get("gpd") or {}).get("xi"), best_aic_high_u=ta2.get("best_aic"),
-                       censored=ta["censored_total"])
-            for name in MODEL_NAMES:
-                if name in ta["fits"]:
-                    for pk, pv in ta["fits"][name]["params"].items():
-                        row[f"{name}_{pk}"] = pv
-                    row[f"{name}_aic"] = ta["aic"][name]
-            for pair, (R, z, pv) in ta["vuong"].items():
-                row[f"vuong_{pair}_z"] = z
-                row[f"vuong_{pair}_p"] = pv
+                       median=ta["median"], censored=ta["censored_total"],
+                       u=ta["u"], n_exceed=ta["n_exceed"], xi=g["xi"], xi_lo=g["xi_ci"][0], xi_hi=g["xi_ci"][1],
+                       scale=g["scale"], lr_exp_stat=g["lr_exp"]["stat"], lr_exp_p=g["lr_exp"]["p"],
+                       u_high=ta2["u"], n_exceed_high=ta2["n_exceed"], xi_high=g2["xi"], xi_lo_high=g2["xi_ci"][0],
+                       xi_hi_high=g2["xi_ci"][1], lr_exp_p_high=g2["lr_exp"]["p"])
             tail_rows.append(row)
-            print(f"[tail] {fam} {P['label']} p={P['p']:g}: best={row['best_aic']} xi={row['xi']:.3f} "
-                  f"(high-u xi={row['xi_high_u']})", flush=True)
+            print(f"[tail] {fam} {P['label']} p={P['p']:g}: xi={g['xi']:.3f} [{g['xi_ci'][0]:.3f}, {g['xi_ci'][1]:.3f}] "
+                  f"LR(xi=0) p={g['lr_exp']['p']:.2g} | high-u xi={g2['xi']:.3f}", flush=True)
     dump(tail_rows, "exp2_tail_fits.json")
     if tail_rows:
-        cols = sorted({k for r in tail_rows for k in r}, key=lambda c: (c not in ("family", "point", "d", "p"), c))
+        cols = list(tail_rows[0])
         with open(os.path.join(RES, "exp2_tail_fits.csv"), "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=cols)
             w.writeheader()
@@ -362,7 +345,7 @@ def main():
         ta = allta[(fam, key)]
         tag = f"{fam}_{'_'.join(str(x) for x in key)}"
         buffers[tag] = dict(title=title, mean=float(P["S"].mean()), median=float(np.median(P["S"])),
-                            best=ta.get("best_aic"), table=buffer_table(P, ta))
+                            xi=ta["gpd"]["xi"], table=buffer_table(P, ta))
     dump(buffers, "exp2_buffers.json")
     for key, P in bb.items():
         fig_ccdf(P["S"], f"exp2_ccdf_relay_{'_'.join(str(x) for x in key)}.png",
@@ -380,11 +363,6 @@ def main():
             res = {}
             for rho in (0.5, 0.8):
                 pr, aa = buf.lindley_overflow(S, rho, thr, n_windows=200_000_000)
-                ta = allta[(fam, key)]
-                u, pu = ta["u"] + 0.5, ta["pu"]
-                best = ta["best_aic"]
-                sf = lambda x: tails.model_sf(best, ta["fits"][best]["params"], x, u, pu)
-                emp_sf = lambda x: np.mean(S > x)
                 FI_emp = [np.mean(np.maximum(S - x, 0)) / S.mean() for x in thr]
                 res[str(rho)] = dict(a=aa, thresholds_med=thr_med.tolist(), thresholds=thr.tolist(), P_overflow=pr.tolist(),
                                      veraverbeke_empirical=[rho / (1 - rho) * f for f in FI_emp])
@@ -413,8 +391,6 @@ def nconv5_analysis(bb1):
             r["ler_nconv1_main_run"] = float(bb1[key]["fail"].mean())
         ta5 = tails.analyze_tail(S5, tail_frac=max(1e-2, 1000 / len(S5)), censored_at=P["cens_at"])
         r["S5_gpd"] = ta5.get("gpd")
-        r["S5_best_aic"] = ta5.get("best_aic")
-        r["S5_pareto_alpha"] = ta5.get("fits", {}).get("pareto", {}).get("params", {}).get("alpha")
         out[str(key)] = r
         for S, lab in [(S1, "S_1: first solution"), (S5, "S_5: 5 solutions (stop_nconv=5)")]:
             x, sf = tails.survival(S)

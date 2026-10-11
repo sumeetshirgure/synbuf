@@ -5,7 +5,11 @@
 ## 1. Summary of findings
 
 1. **Capping Relay-BP blows up the logical error rate; it does not produce a flat error floor.** With a fixed work budget $c$, the capped LER $P_L(c)$ tracks the uncapped LER at low $p$ and then rises far faster than it as $p$ grows. For [[144,12,12]] with $c=200$ iterations, $P_L(c)=2\times10^{-6}$, $5.5\times10^{-5}$ and $1.5\times10^{-2}$ at $p=5\times10^{-4}$, $10^{-3}$ and $3\times10^{-3}$, while the uncapped LER is 0, 0 and $5.3\times10^{-4}$. The excess is set by $P(S>c)$, which is strongly $p$-dependent. So the cap acts as an additional, rapidly growing failure mechanism rather than as a constant offset.
-2. **Relay-BP work has a much heavier, power-law tail that grows heavier with $p$.** $\xi$ ranges from about 0.05–0.4 at $p=5\times10^{-4}$, through 0.34–0.94 at $10^{-3}$, to above 1 at $3\times10^{-3}$ for the three codes with $d\ge10$ ($\alpha\approx0.74$–$1.01$). A fit at a 10× higher threshold gives $\xi\approx0.84$–$1.15$ there, so the tail sits at or near the infinite-mean boundary rather than clearly beyond it. With $\alpha\le1$ the leading-order buffer formulas diverge, and a D/G/1 Lindley simulation of [[144,12,12]] at $p=3\times10^{-3}$ spends about a quarter of its time draining single huge decodes even at load $\rho=0.5$. Spare servers (parallel windows) shrink the Pareto-tail buffer by orders of magnitude where the formulas still apply.
+2. **Relay-BP work has a much heavier tail that grows heavier with $p$.**
+   - The GPD shape $\xi$ is 0.05–0.42 at $p=5\times10^{-4}$, 0.34–0.95 at $10^{-3}$, and 0.53–1.67 at $3\times10^{-3}$. The likelihood-ratio test rejects an exponential tail ($\xi=0$) at every point ($p<10^{-24}$).
+   - For the three $d\ge10$ codes at $p=3\times10^{-3}$, $\xi=1.13$–$1.67$, with CIs above 1, and it stays above 1 at a 10× higher threshold (1.49–1.91). The tail is therefore beyond the infinite-mean boundary ($P(S>x)\sim x^{-1/\xi}$ with $1/\xi\approx0.6$–$0.9$).
+   - With $\xi\ge1$ the leading-order buffer formulas diverge. A D/G/1 Lindley simulation of [[144,12,12]] at $p=3\times10^{-3}$ spends about a quarter of its time draining single huge decodes, even at load $\rho=0.5$.
+   - Where $\xi<1$, spare servers (parallel windows) shrink the buffer by orders of magnitude.
 3. **With all bounded-cost operations counted, union-find has a lighter tail than MWPM, and MWPM's heaviest tail comes from its primal (matching) side** ([§7](#7-union-find-decoder-ldpc-vs-mwpm-full-operation-counts)). At $d\in\{11,15\}$ and $p\in\{10^{-3},3\times10^{-3}\}$, MWPM's total work has $\xi\approx0.17$–$0.31$ (Pareto-type) and a maximum of 8–12× the median. Its primal work is only about 10% of the mean but has the heaviest tail ($\xi\approx0.21$–$0.45$, rising with $p$ and $d$). Peeling UF has $\xi\approx0.14$ at $p=10^{-3}$, $\xi\approx0$ at $p=3\times10^{-3}$, and a maximum of 4–6× the median. This UF variant is much less accurate than MWPM: about 36× and 210× higher LER at $p=3\times10^{-3}$ for $d=11$ and $d=15$.
 
 ## 2. What was and was not run
@@ -19,7 +23,7 @@
 | Instrumented decoders | PyMatching, Relay-BP and ldpc (union-find), built from pinned commits with the patches in `third_party/` (`scripts/build_decoders.sh`) |
 | Relay-BP parameters | Per-code tuned values from `results/relay_params.json` (tuned earlier; see `results/relay_tuning_notes.md`) |
 | Experiment 1 (Relay-BP) | Offline $P_L(c)$ for an absolute cap ladder, the deployed Relay-BP limit, and calibrated caps $c_3,c_4,c_5$ |
-| Experiment 2 (Relay-BP) | Peaks-over-threshold tail fits (GPD, exponential, lognormal, Pareto), Vuong tests, AIC ranking and censored likelihood for every point; buffer tables for 5 selected points; an empirical log-log survival plot for every point; D/G/1 Lindley simulation at 1 point |
+| Experiment 2 (Relay-BP) | Peaks-over-threshold GPD tail fits with a censored likelihood, a profile-likelihood CI for $\xi$ and a likelihood-ratio test of $\xi=0$, for every point; buffer tables for 5 selected points; an empirical log-log survival plot for every point; D/G/1 Lindley simulation at 1 point |
 
 ### Not run, or run differently from EXPERIMENTS.md
 
@@ -108,10 +112,17 @@ The uncapped Relay-BP LER counts censored shots (those reaching 600,080 iteratio
 
 Implemented in `synbuf/tails.py` and `scripts/analyze.py`, on the uncapped Experiment 1 data.
 - **Threshold.** $u$ is the empirical $(1-q)$ quantile of $S$ with $q=10^{-2}$ (about 10,000 exceedances). A second fit at $q/10$ checks threshold stability. (§7 uses $q=10^{-3}$.)
-- **Fits.** Left-truncated MLE fits above $u$ of exponential, lognormal and Pareto tails, plus a generalized Pareto (GPD) fit with a bootstrap 95% interval on its shape $\xi$. $\xi>0$ indicates a Pareto-type tail; $\xi\approx0$ the Gumbel domain (exponential or lognormal).
-- **Model selection.** AIC ranking and pairwise Vuong likelihood-ratio tests.
-- **Censoring.** Relay-BP shots at the leg limit enter the likelihood as right-censored observations ($S>600{,}080$).
-- **Buffers.** The fitted tail is spliced onto the empirical bulk below $u$. For sliding windows (D/G/1), solve $\frac{\rho}{1-\rho}\bar F_I(x)=\varepsilon$ (Veraverbeke), where $\bar F_I$ is the integrated tail. For parallel windows with $m$ spare servers, solve $\bar F_I(x)^m=\varepsilon$ (Foss–Korshunov, leading order). $\rho=0.5$.
+- **Fit.** Maximum-likelihood fit of a generalized Pareto distribution GPD$(\xi,\sigma)$ to the excesses $S-u$. The shape $\xi$ is the reported tail parameter:
+  - $\xi>0$: a heavy tail with $P(S>x)\sim x^{-1/\xi}$;
+  - $\xi=0$: an exponential tail;
+  - $\xi<0$: a bounded tail.
+
+  Lognormal and Pareto tails are not distinguished; at a finite threshold both give $\xi>0$.
+- **Tests.** Two likelihood-ratio procedures:
+  - a test of $H_0:\xi=0$ (exponential tail) against free $\xi$, with a $\chi^2_1$ null distribution;
+  - a 95% confidence interval for $\xi$, obtained by inverting the likelihood-ratio test (profile likelihood).
+- **Censoring.** Relay-BP shots at the leg limit enter the GPD likelihood as right-censored observations ($S>600{,}080$).
+- **Buffers.** The fitted GPD tail is spliced onto the empirical bulk below $u$. For sliding windows (D/G/1), solve $\frac{\rho}{1-\rho}\bar F_I(x)=\varepsilon$ (Veraverbeke), where $\bar F_I$ is the integrated tail. For parallel windows with $m$ spare servers, solve $\bar F_I(x)^m=\varepsilon$ (Foss–Korshunov, leading order). $\rho=0.5$.
 - **Lindley check.** A D/G/1 queue simulated for $2\times10^8$ windows by resampling the empirical $S$, at $\rho=0.5$ and $0.8$.
 
 ### 5.2 Figures
@@ -120,32 +131,32 @@ Implemented in `synbuf/tails.py` and `scripts/analyze.py`, on the uncapped Exper
 
 ### 5.3 Tail fits
 
-From `results/exp2_tail_fits.csv`. "Censored" is the number of shots at the leg limit.
+From `results/exp2_tail_fits.csv`. The $\xi$ CIs are 95% profile-likelihood intervals. "LR $p$" is the p-value of the likelihood-ratio test of $\xi=0$. "Censored" is the number of shots at the leg limit.
 
-| Code | $p$ | $u$ | Best (AIC) | $\xi$ [95% CI] | Pareto $\alpha$ | Censored |
+| Code | $p$ | $u$ | $\xi$ [95% CI] | LR $p$ ($\xi=0$) | $\xi$ at 10× higher threshold [95% CI] | Censored |
 |---|---|---|---|---|---|---|
-| [[72,12,6]] | 5e-4 | 11 | lognormal | 0.05 [0.01, 0.08] | 3.0 | 0 |
-| [[72,12,6]] | 1e-3 | 17 | Pareto | 0.34 [0.32, 0.37] | 3.2 | 0 |
-| [[72,12,6]] | 3e-3 | 111 | lognormal | 0.53 [0.50, 0.56] | 1.6 | 0 |
-| [[90,8,10]] | 5e-4 | 15 | Pareto | 0.23 [0.19, 0.28] | 3.6 | 0 |
-| [[90,8,10]] | 1e-3 | 21 | Pareto | 0.80 [0.77, 0.85] | 2.4 | 0 |
-| [[90,8,10]] | 3e-3 | 539 | Pareto | 1.42 [1.38, 1.46] | 0.74 | 117 |
-| [[108,8,10]] | 5e-4 | 11 | Pareto | 0.42 [0.38, 0.46] | 3.4 | 0 |
-| [[108,8,10]] | 1e-3 | 15 | Pareto | 0.94 [0.90, 0.98] | 2.2 | 1 |
-| [[108,8,10]] | 3e-3 | 461 | Pareto | 1.46 [1.42, 1.50] | 0.76 | 128 |
-| [[144,12,12]] | 5e-4 | 18 | lognormal | 0.09 [0.05, 0.11] | 4.2 | 0 |
-| [[144,12,12]] | 1e-3 | 24 | Pareto | 0.48 [0.45, 0.51] | 3.3 | 0 |
-| [[144,12,12]] | 3e-3 | 293 | Pareto | 1.07 [1.03, 1.11] | 1.01 | 26 |
+| [[72,12,6]] | 5e-4 | 11 | 0.05 [0.04, 0.06] | 7.3e-25 | 0.31 [0.24, 0.38] | 0 |
+| [[72,12,6]] | 1e-3 | 17 | 0.34 [0.32, 0.36] | <1e-300 | 0.67 [0.57, 0.78] | 0 |
+| [[72,12,6]] | 3e-3 | 111 | 0.53 [0.50, 0.56] | <1e-300 | 0.59 [0.50, 0.69] | 0 |
+| [[90,8,10]] | 5e-4 | 15 | 0.23 [0.21, 0.25] | <1e-300 | 0.76 [0.67, 0.86] | 0 |
+| [[90,8,10]] | 1e-3 | 21 | 0.80 [0.77, 0.83] | <1e-300 | 1.36 [1.22, 1.51] | 0 |
+| [[90,8,10]] | 3e-3 | 539 | 1.60 [1.55, 1.65] | <1e-300 | 1.81 [1.61, 2.02] | 117 |
+| [[108,8,10]] | 5e-4 | 11 | 0.42 [0.40, 0.44] | <1e-300 | 1.46 [1.32, 1.62] | 0 |
+| [[108,8,10]] | 1e-3 | 15 | 0.95 [0.91, 0.98] | <1e-300 | 0.64 [0.56, 0.72] | 1 |
+| [[108,8,10]] | 3e-3 | 461 | 1.67 [1.62, 1.72] | <1e-300 | 1.91 [1.71, 2.14] | 128 |
+| [[144,12,12]] | 5e-4 | 18 | 0.09 [0.07, 0.10] | 2.2e-61 | 0.37 [0.29, 0.45] | 0 |
+| [[144,12,12]] | 1e-3 | 24 | 0.48 [0.45, 0.50] | <1e-300 | 0.50 [0.41, 0.60] | 0 |
+| [[144,12,12]] | 3e-3 | 293 | 1.13 [1.09, 1.17] | <1e-300 | 1.49 [1.33, 1.65] | 26 |
 
 ### 5.4 Buffer estimates at $\varepsilon=10^{-12}$
 
-From `results/exp2_buffers.json`, in units of the median decode work, at $\rho=0.5$, using the AIC-best model. "Diverges" means the integrated tail is infinite ($\alpha\le1$ or $\xi\ge1$), or the solver reached its $10^{40}$ upper bound.
+From `results/exp2_buffers.json`, in units of the median decode work, at $\rho=0.5$, from the fitted GPD tail. "Diverges" means the integrated tail is infinite ($\xi\ge1$).
 
-| Point | Model | Sliding (D/G/1) | PWD, $m=2$ | PWD, $m=3$ | GPD, D/G/1 |
-|---|---|---|---|---|---|
-| Relay [[144,12,12]], $p=10^{-3}$ | Pareto | $9.5\times10^4$ | 247 | 34 | $4\times10^9$ |
-| Relay [[72,12,6]], $p=3\times10^{-3}$ | lognormal | $5.1\times10^7$ | $1.2\times10^5$ | $8.0\times10^3$ | $5.3\times10^{13}$ |
-| Relay [[90,8,10]], [[108,8,10]], [[144,12,12]], $p=3\times10^{-3}$ | Pareto | diverges | diverges | diverges | diverges |
+| Point | $\xi$ | Sliding (D/G/1) | PWD, $m=2$ | PWD, $m=3$ |
+|---|---|---|---|---|
+| Relay [[144,12,12]], $p=10^{-3}$ | 0.48 | $4.0\times10^9$ | $1.4\times10^4$ | 210 |
+| Relay [[72,12,6]], $p=3\times10^{-3}$ | 0.53 | $5.3\times10^{13}$ | $9.2\times10^6$ | $5.1\times10^4$ |
+| Relay [[90,8,10]], [[108,8,10]], [[144,12,12]], $p=3\times10^{-3}$ | 1.13–1.67 | diverges | diverges | diverges |
 
 ### 5.5 Lindley check (D/G/1)
 
@@ -161,10 +172,13 @@ For Relay-BP, each decode that reaches the leg limit (about 1 in 40,000 windows)
 ### 5.6 Findings
 
 - **Relay-BP.**
-  - The tail grows heavier with $p$. At every $p\ge10^{-3}$ it is heavier than MWPM's tail at the surface-code points of §7 (MWPM total work: $\xi\approx0.17$–$0.31$).
-  - At $p=3\times10^{-3}$ the three $d\ge10$ codes have $\alpha\le1$ over the observed range. The single-server buffer has no finite leading-order size, and the simulated queue is dominated by individual huge decodes.
-  - Where $\alpha>1$ ([[144,12,12]] at $p=10^{-3}$), spare servers cut the buffer from about $10^5$ to $34$ median decodes ($m=3$). This matches the prediction that parallel windows help most for a fat tail.
-- **Threshold caveat.** For Relay-BP the threshold $u$ sits only a few times above the median at $p\le10^{-3}$ (11–24 iterations), so those fits describe the top 1% of the distribution rather than only the far tail. The higher-threshold fits in `exp2_tail_fits.csv` (`xi_high_u`, `best_aic_high_u`) also give $\xi>0$ at every point but move $\xi$ by up to about 1 at some points (for example [[108,8,10]] at $p=5\times10^{-4}$: 0.42 vs 1.46). At $p=3\times10^{-3}$ the higher threshold gives $\xi=0.86$, $0.84$ and $1.15$ for [[90,8,10]], [[108,8,10]] and [[144,12,12]], and prefers lognormal for the first two. So $\xi>1$ at that $p$ is threshold-sensitive; the robust statement is that the tail is at or near the infinite-mean boundary.
+  - The tail is heavy at every point: the likelihood-ratio test rejects $\xi=0$ everywhere. It grows heavier with $p$. At every $p\ge10^{-3}$, $\xi\ge0.34$, heavier than MWPM's total work at the surface-code points of §7 ($\xi\approx0.17$–$0.31$).
+  - At $p=3\times10^{-3}$ the three $d\ge10$ codes have $\xi>1$ (CIs above 1) at both thresholds, so the work has an infinite mean. The single-server buffer has no finite leading-order size, and the simulated queue is dominated by individual huge decodes.
+  - Where $\xi<1$ ([[144,12,12]] at $p=10^{-3}$), spare servers cut the buffer from $4\times10^9$ to 210 median decodes ($m=3$). This matches the prediction that parallel windows help most for a fat tail.
+- **Threshold caveat.** For Relay-BP the threshold $u$ sits only a few times above the median at $p\le10^{-3}$ (11–24 iterations), so those fits describe the top 1% of the distribution rather than only the far tail.
+  - The higher-threshold fits (`xi_high` in `exp2_tail_fits.csv`) also give $\xi>0$ at every point, but they move $\xi$ by up to about 1 at some points. For example, [[108,8,10]] at $p=5\times10^{-4}$ goes from 0.42 to 1.46, and [[90,8,10]] at $p=10^{-3}$ from 0.80 to 1.36.
+  - At $p=3\times10^{-3}$ the higher threshold gives $\xi=1.81$, 1.91 and 1.49, so $\xi>1$ is robust there.
+  - An earlier version of this analysis fitted the GPD without the censored shots. That biases $\xi$ downward, most strongly at the higher threshold, where censored shots are a larger share of the exceedances. It gave 0.86, 0.84 and 1.15 at that threshold, and led to the conclusion that the tail was only "at or near" the infinite-mean boundary.
 - **Censoring caveat.** Relay-BP censoring is at most $1.3\times10^{-4}$ of shots. It affects only the tail beyond 600,080 iterations, which is irrelevant for any practical cap but means buffer estimates that extrapolate past that point are effectively bounded by it.
 
 ## 6. Reproducing these results
@@ -226,23 +240,28 @@ Outputs: `results/uf_summary.json`, `results/uf_tail_fits.{json,csv}`, `figures/
 
 The two decoders' $S$ values are in different units and are not comparable with each other; only their shapes are.
 
-Tail fits use the same pipeline as §5 (threshold at the top $10^{-3}$, about 1000 exceedances). Each entry is the GPD shape $\xi$ with its 95% bootstrap CI, then in brackets $\xi$ at a 10× higher threshold.
+Tail fits use the same GPD fit and tests as §5, with the threshold at the top $10^{-3}$ (about 1000 exceedances). Each entry is the shape $\xi$ with its 95% profile-likelihood CI, then in brackets $\xi$ at a 10× higher threshold.
 
 | $d$ | $p$ | MWPM $S$ | MWPM dual | MWPM primal | MWPM extraction |
 |---|---|---|---|---|---|
-| 11 | 1e-3 | 0.23 (0.16, 0.28) [0.26] | 0.20 (0.15, 0.26) [0.21] | 0.21 (0.17, 0.26) [0.15] | −0.07 (−0.10, −0.03) |
-| 15 | 1e-3 | 0.17 (0.12, 0.22) [0.20] | 0.17 (0.12, 0.22) [0.26] | 0.24 (0.17, 0.28) [0.26] | −0.04 (−0.10, 0.01) |
-| 11 | 3e-3 | 0.23 (0.18, 0.28) [0.18] | 0.20 (0.16, 0.26) [0.13] | **0.37** (0.33, 0.44) [0.30] | −0.02 (−0.06, 0.02) |
-| 15 | 3e-3 | 0.31 (0.28, 0.36) [0.18] | 0.27 (0.22, 0.33) [0.12] | **0.45** (0.39, 0.53) [0.25] | −0.02 (−0.06, 0.01) |
+| 11 | 1e-3 | 0.23 (0.17, 0.28) [0.26] | 0.20 (0.15, 0.26) [0.21] | 0.21 (0.16, 0.27) [0.15] | −0.07 (−0.10, −0.03) |
+| 15 | 1e-3 | 0.17 (0.12, 0.22) [0.20] | 0.17 (0.13, 0.23) [0.26] | 0.23 (0.18, 0.29) [0.26] | −0.04 (−0.08, −0.00) |
+| 11 | 3e-3 | 0.23 (0.18, 0.29) [0.18] | 0.20 (0.15, 0.26) [0.13] | **0.37** (0.31, 0.44) [0.30] | −0.02 (−0.06, 0.03) |
+| 15 | 3e-3 | 0.31 (0.26, 0.37) [0.18] | 0.27 (0.22, 0.33) [0.12] | **0.45** (0.39, 0.52) [0.25] | −0.02 (−0.06, 0.02) |
 
 | $d$ | $p$ | UF $S$ | UF growth | UF merge | UF validity | UF peel |
 |---|---|---|---|---|---|---|
-| 11 | 1e-3 | 0.15 (0.10, 0.19) [0.09] | 0.13 (0.07, 0.18) [0.06] | 0.08 (0.03, 0.14) | −0.13 | 0.13 (0.09, 0.19) [0.04] |
-| 15 | 1e-3 | 0.14 (0.09, 0.19) [0.26] | 0.17 (0.11, 0.23) [0.27] | 0.06 (0.02, 0.10) | 0.00 | 0.10 (0.06, 0.14) [0.27] |
-| 11 | 3e-3 | −0.01 (−0.05, 0.03) [−0.20] | 0.01 (−0.04, 0.06) [−0.09] | 0.02 (−0.02, 0.06) | 0.04 | −0.03 (−0.07, 0.01) [−0.18] |
-| 15 | 3e-3 | 0.04 (−0.00, 0.08) [−0.05] | 0.10 (0.06, 0.14) [0.09] | 0.05 (0.00, 0.09) | −0.17 | 0.04 (−0.00, 0.08) [−0.09] |
+| 11 | 1e-3 | 0.15 (0.10, 0.20) [0.09] | 0.13 (0.08, 0.18) [0.06] | 0.08 (0.03, 0.14) | −0.13 | 0.13 (0.08, 0.19) [0.04] |
+| 15 | 1e-3 | 0.14 (0.10, 0.19) [0.26] | 0.17 (0.12, 0.22) [0.27] | 0.06 (0.02, 0.11) | 0.00 | 0.10 (0.06, 0.15) [0.27] |
+| 11 | 3e-3 | −0.01 (−0.05, 0.04) [−0.19] | 0.01 (−0.03, 0.06) [−0.09] | 0.02 (−0.02, 0.06) | 0.04 | −0.03 (−0.07, 0.02) [−0.18] |
+| 15 | 3e-3 | 0.04 (−0.00, 0.09) [−0.05] | 0.10 (0.05, 0.15) [0.09] | 0.04 (−0.00, 0.09) | −0.17 | 0.04 (−0.00, 0.09) [−0.09] |
 
-The best AIC model for $S$ is Pareto at all four MWPM points and at the two UF points with $p=10^{-3}$. At the UF points with $p=3\times10^{-3}$ it is exponential ($d=11$) and lognormal ($d=15$). All fits, Vuong tests and per-counter means and maxima are in `results/uf_tail_fits.csv` and `results/uf_summary.json`.
+**Likelihood-ratio test of $\xi=0$ (exponential tail) for $S$.**
+- MWPM: rejected at all four points ($p\le4\times10^{-18}$).
+- UF at $p=10^{-3}$: rejected ($p\le4\times10^{-11}$).
+- UF at $p=3\times10^{-3}$: not rejected ($p=0.69$ at $d=11$ and $0.072$ at $d=15$).
+
+All fits, test statistics, and per-counter means and maxima are in `results/uf_tail_fits.csv` and `results/uf_summary.json`.
 
 Figures:
 - `figures/uf_ccdf_vs_mwpm.png`: survival functions of $S$, normalized by the median;
@@ -251,12 +270,12 @@ Figures:
 
 ### 7.3 Findings
 
-- **MWPM's heaviest tail is on the primal side.** Primal work (alternating trees, blossoms and the region-wide updates they trigger) is only about 10% of the mean but has the heaviest tail. At $p=3\times10^{-3}$, its $\xi=0.37$–$0.45$ (Pareto $\alpha=1/\xi\approx2.2$–$2.7$) against 0.20–0.27 for the dual. Its tail also gets heavier with $p$ and $d$. The ordering persists at the higher threshold (0.25–0.30 against 0.12–0.13). Within the observed range ($\ge10^{-6}$), $S$ is dominated by the dual, so the fit to $S$ itself gives a smaller $\xi$ (0.17–0.31). Asymptotically, by the bound above, the primal component sets the tail class of MWPM work.
+- **MWPM's heaviest tail is on the primal side.** Primal work (alternating trees, blossoms and the region-wide updates they trigger) is only about 10% of the mean but has the heaviest tail. At $p=3\times10^{-3}$, its $\xi=0.37$–$0.45$ ($P(S>x)\sim x^{-1/\xi}$ with $1/\xi\approx2.2$–$2.7$) against 0.20–0.27 for the dual. Its tail also gets heavier with $p$ and $d$. The ordering persists at the higher threshold (0.25–0.30 against 0.12–0.13). Within the observed range ($\ge10^{-6}$), $S$ is dominated by the dual, so the fit to $S$ itself gives a smaller $\xi$ (0.17–0.31). Asymptotically, by the bound above, the primal component sets the tail class of MWPM work.
 - **The earlier MWPM metric (`S_legacy`) understates MWPM's tail.** It counts only PQ pops and reschedules. It sees primal events only through the reschedules they trigger, and misses the alternating-tree bookkeeping, blossom-cycle work and node visits of shrinking regions. It is mostly a dual metric. For capping and buffer conclusions at large $d$ and $p$, the primal tail should be used instead.
 - **UF's tail is lighter than MWPM's at every point, and lightens with $p$.**
   - The worst of $10^6$ UF decodes is 3.8–6.2× the median, against 7.7–12.5× for MWPM.
-  - At $p=10^{-3}$, UF's $\xi\approx0.14$–$0.15$ (CI above 0, so a mildly heavy, Pareto-type tail with $\alpha\approx7$).
-  - At $p=3\times10^{-3}$, $\xi\approx0$ (CI includes 0; Gumbel domain).
+  - At $p=10^{-3}$, UF's $\xi\approx0.14$–$0.15$. The CI is above 0 and the likelihood-ratio test rejects $\xi=0$: a mildly heavy tail, $P(S>x)\sim x^{-7}$.
+  - At $p=3\times10^{-3}$, $\xi\approx0$. The CI includes 0 and the test does not reject $\xi=0$: consistent with an exponential tail.
   - The opposite $p$ trends make sense. UF's work is a sum over many fairly independent clusters, which smooths out as the number of defects grows, while MWPM's primal work concentrates in large alternating trees and blossoms, which become more common as $p$ grows.
   - Among UF's components, growth (cluster-boundary scans) usually has the largest $\xi$. Peeling dominates the mean (64–75%). The higher-threshold fits move UF's $\xi$ by up to about 0.1–0.2 (for example, $S$ at $d=15$, $p=10^{-3}$: 0.14 → 0.26), so the ordering of UF's components is not well resolved. The robust statement is $\xi\lesssim0.25$ at $p=10^{-3}$ and $\xi\approx0$ at $p=3\times10^{-3}$.
 - **This supersedes the earlier cluster-operation result.** The earlier version of this section found a bounded-type tail ($\xi\approx-0.1$). That metric charged one unit per cluster-level event, regardless of cluster size. It was a light-tailed artifact of following the detection-event count.
