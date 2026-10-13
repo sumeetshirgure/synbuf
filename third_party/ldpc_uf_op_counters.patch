@@ -1,0 +1,448 @@
+diff --git a/src_cpp/union_find.hpp b/src_cpp/union_find.hpp
+index d316c5b..10cd458 100644
+--- a/src_cpp/union_find.hpp
++++ b/src_cpp/union_find.hpp
+@@ -23,6 +23,32 @@ namespace ldpc::uf {
+     const std::vector<double> EMPTY_DOUBLE_VECTOR = {};
+     tsl::robin_set<int> EMPTY_INT_ROBIN_SET = {};
+ 
++    // synbuf instrumentation: per-decode operation counters (reset at the start of each decode).
++    // Every counter counts operations of bounded cost (O(1) amortized hash-set operations, or a fixed
++    // number of sparse-matrix entry visits), so decode time is within constant factors of their sum.
++    // The graph (peeling) path is the one instrumented; matrix mode only counts its GF(2) solves.
++    struct OpCounters {
++        uint64_t clusters_created = 0;  // singleton clusters created, one per syndrome bit
++        uint64_t growth_rounds = 0;     // iterations of the global grow/merge loop
++        uint64_t cluster_grows = 0;     // grow_cluster calls on active (invalid) clusters
++        uint64_t growth_row_visits = 0; // check-row entries scanned for candidate bits during growth
++        uint64_t bit_add_calls = 0;     // add_bit_node_to_cluster calls (each a membership test + update)
++        uint64_t growth_col_visits = 0; // bit-column entries visited when adding bits (check membership updates)
++        uint64_t merges = 0;            // cluster merges (merge_with_cluster calls)
++        uint64_t merge_moves = 0;       // nodes / syndromes copied into the surviving cluster by merges
++        uint64_t cluster_scans = 0;     // per-round validity checks (O(1) parity + boundary flag per cluster)
++        uint64_t sort_compares = 0;     // comparisons when sorting the invalid clusters by size each round
++        uint64_t peel_visits = 0;       // spanning-tree construction: matrix entries visited
++        uint64_t peel_steps = 0;        // peeling: tree nodes processed (leaf to root)
++        uint64_t cluster_solves = 0;    // per-cluster GF(2) solves (matrix mode only; not used by synbuf)
++        void reset() { *this = OpCounters(); }
++    };
++
++    inline OpCounters &op_counters() {
++        static thread_local OpCounters counters;
++        return counters;
++    }
++
+     std::vector<int> sort_indices(std::vector<double> &B) {
+         std::vector<int> indices(B.size());
+         std::iota(indices.begin(), indices.end(), 0);
+@@ -92,6 +118,7 @@ namespace ldpc::uf {
+             for (int check_index: boundary_check_nodes) {
+                 bool erase = true;
+                 for (auto &e: this->pcm.iterate_row(check_index)) {
++                    op_counters().growth_row_visits++;
+                     if (this->global_bit_membership[e.col_index] != this) {
+                         candidate_bit_nodes.push_back(e.col_index);
+                         erase = false;
+@@ -107,9 +134,10 @@ namespace ldpc::uf {
+         }
+ 
+         int add_bit_node_to_cluster(int bit_index) {
++            op_counters().bit_add_calls++;
+             auto bit_membership = this->global_bit_membership[bit_index];
+             if (bit_membership == this) return 0; //if the bit is already in the cluster terminate.
+-            else if (bit_membership == NULL) {
++            if (bit_membership == NULL) {
+                 //if the bit has not yet been assigned to a cluster we add it.
+                 this->bit_nodes.insert(bit_index);
+                 this->global_bit_membership[bit_index] = this;
+@@ -123,6 +151,7 @@ namespace ldpc::uf {
+                 this->contains_boundary_bits = true;
+             }
+             for (auto &e: this->pcm.iterate_column(bit_index)) {
++                op_counters().growth_col_visits++;
+                 int check_index = e.row_index;
+                 auto check_membership = this->global_check_membership[check_index];
+                 if (check_membership == this) continue;
+@@ -141,6 +170,9 @@ namespace ldpc::uf {
+         }
+ 
+         void merge_with_cluster(Cluster *cl2) {
++            op_counters().merges++;
++            op_counters().merge_moves += cl2->bit_nodes.size() + cl2->check_nodes.size() +
++                                         cl2->boundary_check_nodes.size() + cl2->enclosed_syndromes.size();
+             for (auto bit_index: cl2->bit_nodes) {
+                 this->bit_nodes.insert(bit_index);
+                 this->global_bit_membership[bit_index] = this;
+@@ -165,6 +197,7 @@ namespace ldpc::uf {
+             if (!this->active) {
+                 return 0;
+             }
++            op_counters().cluster_grows++;
+             this->get_candidate_bit_nodes();
+             this->merge_list.clear();
+ 
+@@ -193,119 +226,81 @@ namespace ldpc::uf {
+             return 1;
+         }
+ 
+-        int find_spanning_tree_parent(const int check_index) {
+-            int parent = this->spanning_tree_check_roots[check_index];
+-            if (parent != check_index) {
+-                return find_spanning_tree_parent(parent);
+-            } else {
+-                return parent;
+-            }
+-        }
+-
+-        void find_spanning_tree() {
+-            this->spanning_tree_bits.clear();
+-            this->spanning_tree_check_roots.clear();
+-            this->spanning_tree_leaf_nodes.clear();
+-            for (int bit_index: this->bit_nodes) {
+-                this->spanning_tree_bits.insert(bit_index);
+-            }
+-            // add the virtual boundary check
+-            if (this->contains_boundary_bits) {
+-                this->check_nodes.insert(-1);
+-            }
+-            for (int check_index: this->check_nodes) {
+-                this->spanning_tree_check_roots[check_index] = check_index;
+-            }
+-            int check_neighbours[2];
+-
+-            for (int bit_index: this->bit_nodes) {
+-                check_neighbours[0] = this->pcm.column_heads[bit_index]->up->row_index;
+-                check_neighbours[1] = this->pcm.column_heads[bit_index]->down->row_index;
+-                if (check_neighbours[0] == check_neighbours[1]) {
+-                    check_neighbours[1] = -1; //set the first check neighbour to the boundary check.
+-                    this->spanning_tree_boundary_bit = bit_index;
+-                }
+-                int root0 = this->find_spanning_tree_parent(check_neighbours[0]);
+-                int root1 = this->find_spanning_tree_parent(check_neighbours[1]);
+-                if (root0 != root1) {
+-                    this->spanning_tree_check_roots[root1] = root0;
+-                } else {
+-                    this->spanning_tree_bits.erase(bit_index);
+-                }
+-            }
+-            for (int check_index: this->check_nodes) {
+-                if (check_index == -1) {
+-                    this->spanning_tree_leaf_nodes.insert(check_index);
+-                } else {
+-                    int spanning_tree_connectivity = 0;
+-                    for (auto &e: this->pcm.iterate_row(check_index)) {
+-                        if (this->spanning_tree_bits.contains(e.col_index)) {
+-                            spanning_tree_connectivity += 1;
+-                        }
+-                    }
+-                    if (spanning_tree_connectivity == 1) {
+-                        this->spanning_tree_leaf_nodes.insert(check_index);
+-                    }
+-                }
+-            }
+-        }
+-
++        // synbuf: peeling decoder (Delfosse-Zemor) on a BFS spanning tree of the cluster.
++        //
++        // Replaces upstream's spanning-tree peeler, which treats the virtual boundary node as a leaf even
++        // when several boundary bits of the tree attach to it, may peel a boundary bit that is not in the
++        // tree, and reads an uninitialized bit index when a leaf has no tree bit left (it aborts with
++        // "Iterator index out of bounds" on circuit-level surface-code clusters).
++        //
++        // The tree is rooted at the virtual boundary node (-1) when the cluster contains boundary bits
++        // (weight-1 columns), else at an arbitrary cluster check. Checks are peeled in reverse BFS order:
++        // a check with a syndrome flips the bit to its parent and toggles the parent's syndrome. For a
++        // valid cluster (even parity, or touching the boundary) this leaves no syndrome at the root.
+         std::vector<int> peel_decode(const std::vector<uint8_t> &syndrome) {
+             std::vector<int> erasure;
+-            tsl::robin_set<int> synds;
+-            for (auto check_index: check_nodes) {
+-                if (syndrome[check_index] == 1) synds.insert(check_index);
+-            }
+-            if (this->contains_boundary_bits == true && this->parity() == 1) {
+-                synds.insert(-1);
+-            }
+-            this->find_spanning_tree();
++            tsl::robin_map<int, int> parent_bit;   // check -> tree bit to its BFS parent
++            tsl::robin_map<int, int> parent_check; // check -> BFS parent check (-1 = virtual boundary)
++            std::vector<int> order;                // checks in BFS order (excluding the virtual root)
++            order.reserve(this->check_nodes.size());
+ 
+-            while (!synds.empty()) {
+-                int leaf_node_index = *(this->spanning_tree_leaf_nodes.begin());
+-                int bit_index;
+-                int check2 = -1; //we assume it is a boundary node at first.
++            auto other_check = [&](int bit_index, int check_index) {
++                int other = -1;
++                for (auto &e: this->pcm.iterate_column(bit_index)) {
++                    op_counters().peel_visits++;
++                    if (e.row_index != check_index) other = e.row_index;
++                }
++                return other;
++            };
+ 
+-                if (leaf_node_index == -1) {
+-                    bit_index = this->spanning_tree_boundary_bit;
+-                } else {
+-                    for (auto &e: this->pcm.iterate_row(leaf_node_index)) {
+-                        bit_index = e.col_index;
+-                        if (this->spanning_tree_bits.contains(bit_index)) break;
+-                    }
++            if (this->contains_boundary_bits) {
++                for (int bit_index: this->bit_nodes) {
++                    op_counters().peel_visits++;
++                    if (!this->planar_code_boundary_bits.contains(bit_index)) continue;
++                    int c = this->pcm.column_heads[bit_index]->down->row_index;
++                    if (parent_bit.contains(c)) continue;
++                    parent_bit[c] = bit_index;
++                    parent_check[c] = -1;
++                    order.push_back(c);
+                 }
+-                for (auto &e: this->pcm.iterate_column(bit_index)) {
+-                    if (e.row_index != leaf_node_index) {
+-                        check2 = e.row_index;
+-                    }
++            } else {
++                int root = this->cluster_id;
++                parent_bit[root] = -1;
++                parent_check[root] = -1;
++                order.push_back(root);
++            }
++            for (size_t head = 0; head < order.size(); head++) {
++                int u = order[head];
++                for (auto &e: this->pcm.iterate_row(u)) {
++                    op_counters().peel_visits++;
++                    int b = e.col_index;
++                    if (this->planar_code_boundary_bits.contains(b) || !this->bit_nodes.contains(b)) continue;
++                    int v = other_check(b, u);
++                    if (parent_bit.contains(v)) continue;
++                    parent_bit[v] = b;
++                    parent_check[v] = u;
++                    order.push_back(v);
+                 }
++            }
+ 
+-                if (synds.contains(leaf_node_index)) {
+-                    this->spanning_tree_leaf_nodes.erase(leaf_node_index);
+-                    // this->spanning_tree_leaf_nodes.insert(check2);
+-                    erasure.push_back(bit_index);
+-                    this->spanning_tree_bits.erase(bit_index);
+-                    if (synds.contains(check2)) synds.erase(check2);
+-                    else synds.insert(check2);
+-                    synds.erase(leaf_node_index);
+-                } else {
+-                    this->spanning_tree_leaf_nodes.erase(leaf_node_index);
+-                    // this->spanning_tree_leaf_nodes.insert(check2);
+-                    this->spanning_tree_bits.erase(bit_index);
++            tsl::robin_set<int> synds;
++            for (int c: order) {
++                if (syndrome[c] == 1) synds.insert(c);
++            }
++            for (size_t k = order.size(); k-- > 0;) {
++                op_counters().peel_steps++;
++                int c = order[k];
++                if (!synds.contains(c)) continue;
++                int b = parent_bit[c];
++                if (b < 0) {
++                    throw std::runtime_error("peel_decode: odd parity at the root of a cluster without boundary.");
+                 }
+-                //check whether new check node is a leaf
+-                if (check2 == -1) {
+-                    this->spanning_tree_leaf_nodes.insert(check2);
+-                } else {
+-                    int spanning_tree_connectivity = 0;
+-                    for (auto &e: this->pcm.iterate_row(check2)) {
+-                        if (this->spanning_tree_bits.contains(e.col_index)) {
+-                            spanning_tree_connectivity += 1;
+-                        }
+-                    }
+-                    if (spanning_tree_connectivity == 1) {
+-                        this->spanning_tree_leaf_nodes.insert(check2);
+-                    }
++                erasure.push_back(b);
++                synds.erase(c);
++                int p = parent_check[c];
++                if (p >= 0) {
++                    if (synds.contains(p)) synds.erase(p);
++                    else synds.insert(p);
+                 }
+             }
+             return erasure;
+@@ -446,12 +441,14 @@ namespace ldpc::uf {
+                 if (syndrome[i] == 1) {
+                     auto *cl = new Cluster(this->pcm, i, global_check_membership, global_bit_membership,
+                                            this->planar_code_boundary_bits);
++                    op_counters().clusters_created++;
+                     clusters.push_back(cl);
+                     invalid_clusters.push_back(cl);
+                 }
+             }
+ 
+             while (!invalid_clusters.empty()) {
++                op_counters().growth_rounds++;
+                 for (auto cl: invalid_clusters) {
+                     if (cl->active) {
+                         cl->grow_cluster(bit_weights, bits_per_step);
+@@ -459,12 +456,14 @@ namespace ldpc::uf {
+                 }
+ 
+                 invalid_clusters.clear();
++                op_counters().cluster_scans += clusters.size();
+                 for (auto cl: clusters) {
+                     if (cl->active && cl->parity() == 1 && !cl->contains_boundary_bits) {
+                         invalid_clusters.push_back(cl);
+                     }
+                 }
+                 std::sort(invalid_clusters.begin(), invalid_clusters.end(), [](const Cluster *lhs, const Cluster *rhs) {
++                    op_counters().sort_compares++;
+                     return lhs->bit_nodes.size() < rhs->bit_nodes.size();
+                 });
+             }
+@@ -495,26 +494,31 @@ namespace ldpc::uf {
+             for (auto i = 0; i < this->pcm.m; i++) {
+                 if (syndrome[i] == 1) {
+                     auto *cl = new Cluster(this->pcm, i, global_check_membership, global_bit_membership);
++                    op_counters().clusters_created++;
+                     clusters.push_back(cl);
+                     invalid_clusters.push_back(cl);
+                 }
+             }
+ 
+             while (!invalid_clusters.empty()) {
++                op_counters().growth_rounds++;
+                 for (auto cl: invalid_clusters) {
+                     if (cl->active) {
+                         cl->grow_cluster(bit_weights, bits_per_step);
++                        op_counters().cluster_solves++;
+                         auto cluster_decoding = cl->invert_decode(syndrome, bit_weights);
+                     }
+                 }
+ 
+                 invalid_clusters.clear();
++                op_counters().cluster_scans += clusters.size();
+                 for (auto cl: clusters) {
+                     if (cl->active && !cl->valid) {
+                         invalid_clusters.push_back(cl);
+                     }
+                 }
+                 std::sort(invalid_clusters.begin(), invalid_clusters.end(), [](const Cluster *lhs, const Cluster *rhs) {
++                    op_counters().sort_compares++;
+                     return lhs->bit_nodes.size() < rhs->bit_nodes.size();
+                 });
+             }
+diff --git a/src_python/ldpc/union_find_decoder/_union_find_decoder.pxd b/src_python/ldpc/union_find_decoder/_union_find_decoder.pxd
+index 98bad54..bfa27b3 100644
+--- a/src_python/ldpc/union_find_decoder/_union_find_decoder.pxd
++++ b/src_python/ldpc/union_find_decoder/_union_find_decoder.pxd
+@@ -17,6 +17,24 @@ cdef extern from "union_find.hpp" namespace "ldpc::uf":
+ 
+     cdef const vector[double] EMPTY_DOUBLE_VECTOR "ldpc::uf::EMPTY_DOUBLE_VECTOR"
+ 
++    # synbuf instrumentation
++    cdef cppclass OpCounters "ldpc::uf::OpCounters":
++        unsigned long long clusters_created
++        unsigned long long growth_rounds
++        unsigned long long cluster_grows
++        unsigned long long growth_row_visits
++        unsigned long long bit_add_calls
++        unsigned long long growth_col_visits
++        unsigned long long merges
++        unsigned long long merge_moves
++        unsigned long long cluster_scans
++        unsigned long long sort_compares
++        unsigned long long peel_visits
++        unsigned long long peel_steps
++        unsigned long long cluster_solves
++        void reset()
++    OpCounters& op_counters "ldpc::uf::op_counters"()
++
+ cdef class UnionFindDecoder():
+     cdef int m
+     cdef int n
+diff --git a/src_python/ldpc/union_find_decoder/_union_find_decoder.pyx b/src_python/ldpc/union_find_decoder/_union_find_decoder.pyx
+index 550298c..a0b4d53 100644
+--- a/src_python/ldpc/union_find_decoder/_union_find_decoder.pyx
++++ b/src_python/ldpc/union_find_decoder/_union_find_decoder.pyx
+@@ -162,6 +162,82 @@ cdef class UnionFindDecoder:
+         
+         return out
+ 
++    def decode_batch_with_op_counts(self, syndromes, edge_obs, llrs=None, int bits_per_step=0):
++        """
++        synbuf: decode a batch of syndromes and return per-shot op counters.
++
++        Parameters
++        ----------
++        syndromes : np.ndarray
++            (shots, m) array of syndrome bits (uint8 / bool).
++        edge_obs : np.ndarray
++            (n,) uint64 array; bit k of edge_obs[j] is set if bit j flips logical observable k.
++        llrs : np.ndarray, optional
++            Bit weights used to order cluster growth (see `decode`).
++        bits_per_step : int, optional
++            As in `decode`; 0 adds all neighbouring bits in each growth step.
++
++        Returns
++        -------
++        (np.ndarray, np.ndarray)
++            Predicted observable masks (shots,) uint64 and op counters (shots, 13) uint64 with columns
++            [clusters_created, growth_rounds, cluster_grows, growth_row_visits, bit_add_calls,
++            growth_col_visits, merges, merge_moves, cluster_scans, sort_compares, peel_visits,
++            peel_steps, cluster_solves].
++        """
++        cdef np.ndarray[np.uint8_t, ndim=2] syn = np.ascontiguousarray(syndromes, dtype=np.uint8)
++        cdef np.ndarray[np.uint64_t, ndim=1] eo = np.ascontiguousarray(edge_obs, dtype=np.uint64)
++        if syn.shape[1] != self.m:
++            raise ValueError(f"The syndromes must have {self.m} columns. Not {syn.shape[1]}.")
++        if eo.shape[0] != self.n:
++            raise ValueError(f"edge_obs must have length {self.n}. Not {eo.shape[0]}.")
++        cdef Py_ssize_t shots = syn.shape[0]
++        cdef np.ndarray[np.uint64_t, ndim=1] pred = np.zeros(shots, dtype=np.uint64)
++        cdef np.ndarray[np.uint64_t, ndim=2] cnt = np.zeros((shots, 13), dtype=np.uint64)
++        cdef Py_ssize_t s
++        cdef int i
++        cdef bint use_llrs = llrs is not None
++        cdef unsigned long long mask
++        cdef bint nonzero
++        if use_llrs:
++            if not len(llrs) == self.n:
++                raise ValueError(f"The llrs must have length {self.n}. Not {len(llrs)}.")
++            for i in range(self.n):
++                self.uf_llrs[i] = llrs[i]
++        self.bits_per_step = self.n if bits_per_step == 0 else bits_per_step
++        for s in range(shots):
++            op_counters().reset()
++            nonzero = False
++            for i in range(self.m):
++                self._syndrome[i] = syn[s, i]
++                if syn[s, i]:
++                    nonzero = True
++            mask = 0
++            if nonzero:
++                if self.uf_method:
++                    self.ufd.decoding = self.ufd.matrix_decode(self._syndrome, self.uf_llrs if use_llrs else EMPTY_DOUBLE_VECTOR, self.bits_per_step)
++                else:
++                    self.ufd.decoding = self.ufd.peel_decode(self._syndrome, self.uf_llrs if use_llrs else EMPTY_DOUBLE_VECTOR, self.bits_per_step)
++                for i in range(self.n):
++                    if self.ufd.decoding[i]:
++                        mask ^= eo[i]
++            pred[s] = mask
++            c = op_counters()
++            cnt[s, 0] = c.clusters_created
++            cnt[s, 1] = c.growth_rounds
++            cnt[s, 2] = c.cluster_grows
++            cnt[s, 3] = c.growth_row_visits
++            cnt[s, 4] = c.bit_add_calls
++            cnt[s, 5] = c.growth_col_visits
++            cnt[s, 6] = c.merges
++            cnt[s, 7] = c.merge_moves
++            cnt[s, 8] = c.cluster_scans
++            cnt[s, 9] = c.sort_compares
++            cnt[s, 10] = c.peel_visits
++            cnt[s, 11] = c.peel_steps
++            cnt[s, 12] = c.cluster_solves
++        return pred, cnt
++
+     @property
+     def decoding(self):
+ 

@@ -1,5 +1,5 @@
 diff --git a/src/pymatching/sparse_blossom/driver/mwpm_decoding.cc b/src/pymatching/sparse_blossom/driver/mwpm_decoding.cc
-index 3f08c37..599fb62 100644
+index 3f08c378..599fb62b 100644
 --- a/src/pymatching/sparse_blossom/driver/mwpm_decoding.cc
 +++ b/src/pymatching/sparse_blossom/driver/mwpm_decoding.cc
 @@ -13,6 +13,7 @@
@@ -23,7 +23,7 @@ index 3f08c37..599fb62 100644
      return res;
  }
 diff --git a/src/pymatching/sparse_blossom/driver/user_graph.pybind.cc b/src/pymatching/sparse_blossom/driver/user_graph.pybind.cc
-index 7b227e5..f0066e2 100644
+index 7b227e5c..66f09e2d 100644
 --- a/src/pymatching/sparse_blossom/driver/user_graph.pybind.cc
 +++ b/src/pymatching/sparse_blossom/driver/user_graph.pybind.cc
 @@ -17,6 +17,7 @@
@@ -34,7 +34,7 @@ index 7b227e5..f0066e2 100644
  #include "stim.h"
  
  using namespace py::literals;
-@@ -338,6 +339,55 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
+@@ -338,6 +339,65 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
          "bit_packed_shots"_a = false,
          "bit_packed_predictions"_a = false,
          "enable_correlations"_a = false);
@@ -53,7 +53,10 @@ index 7b227e5..f0066e2 100644
 +            py::array_t<uint8_t> predictions = py::array_t<uint8_t>(n * num_observable_bytes);
 +            predictions[py::make_tuple(py::ellipsis())] = 0;
 +            uint8_t *predictions_ptr = (uint8_t *)predictions.request().ptr;
-+            py::array_t<uint64_t> counts = py::array_t<uint64_t>(n * 5);
++            // per-shot counters, in order: pq_pops, queue_moves, flood_events, node_reschedules,
++            // neighbor_scans, mwpm_events, tree_ops, region_ops, node_visits, shatter_ops, extract_ops
++            constexpr size_t NC = 11;
++            py::array_t<uint64_t> counts = py::array_t<uint64_t>(n * NC);
 +            uint64_t *cp = (uint64_t *)counts.request().ptr;
 +            auto &mwpm = self.get_mwpm();
 +            std::vector<uint64_t> detection_events;
@@ -75,23 +78,131 @@ index 7b227e5..f0066e2 100644
 +                for (size_t k = 0; k < num_obs; k++)
 +                    predictions_ptr[num_observable_bytes * i + (k >> 3)] ^= (temp_predictions[k] << (k % 8));
 +                auto &c = pm::op_counters();
-+                cp[5 * i + 0] = c.pq_pops;
-+                cp[5 * i + 1] = c.flood_events;
-+                cp[5 * i + 2] = c.mwpm_events;
-+                cp[5 * i + 3] = c.node_reschedules;
-+                cp[5 * i + 4] = c.shatter_ops;
++                uint64_t *row = cp + NC * i;
++                row[0] = c.pq_pops;
++                row[1] = c.queue_moves;
++                row[2] = c.flood_events;
++                row[3] = c.node_reschedules;
++                row[4] = c.neighbor_scans;
++                row[5] = c.mwpm_events;
++                row[6] = c.tree_ops;
++                row[7] = c.region_ops;
++                row[8] = c.node_visits;
++                row[9] = c.shatter_ops;
++                row[10] = c.extract_ops;
 +                detection_events.clear();
 +            }
 +            predictions.resize({n, (py::ssize_t)num_observable_bytes});
-+            counts.resize({n, (py::ssize_t)5});
++            counts.resize({n, (py::ssize_t)NC});
 +            return py::make_tuple(predictions, counts);
 +        },
 +        "shots"_a);
      g.def(
          "decode_to_matched_detection_events_dict",
          [](pm::UserGraph &self, const py::array_t<uint64_t> &detection_events) {
+diff --git a/src/pymatching/sparse_blossom/flooder/detector_node.cc b/src/pymatching/sparse_blossom/flooder/detector_node.cc
+index 3e90c71f..acc667da 100644
+--- a/src/pymatching/sparse_blossom/flooder/detector_node.cc
++++ b/src/pymatching/sparse_blossom/flooder/detector_node.cc
+@@ -27,6 +27,7 @@ int32_t DetectorNode::compute_wrapped_radius() const {
+     int32_t total = 0;
+     auto r = region_that_arrived;
+     while (r != region_that_arrived_top) {
++        op_counters().region_ops++;
+         total += r->radius.y_intercept();
+         r = r->blossom_parent;
+     }
+@@ -55,6 +56,7 @@ size_t DetectorNode::index_of_neighbor(DetectorNode *target) const {
+ GraphFillRegion *DetectorNode::heir_region_on_shatter() const {
+     GraphFillRegion *r = region_that_arrived;
+     while (true) {
++        op_counters().region_ops++;
+         GraphFillRegion *p = r->blossom_parent;
+         if (p == region_that_arrived_top) {
+             return r;
+@@ -79,6 +81,7 @@ cumulative_time_int DetectorNode::compute_local_radius_at_time_bounded_by_region
+     const GraphFillRegion *container = region_that_arrived;
+     cumulative_time_int container_radius = 0;
+     while (true) {
++        op_counters().region_ops++;
+         if (container == nullptr) {
+             // Wasn't inside the bounding region.
+             break;
+diff --git a/src/pymatching/sparse_blossom/flooder/graph_fill_region.cc b/src/pymatching/sparse_blossom/flooder/graph_fill_region.cc
+index 8543fcc1..019b3374 100644
+--- a/src/pymatching/sparse_blossom/flooder/graph_fill_region.cc
++++ b/src/pymatching/sparse_blossom/flooder/graph_fill_region.cc
+@@ -67,6 +67,7 @@ void GraphFillRegion::add_match(GraphFillRegion *region, const CompressedEdge &e
+ }
+ 
+ void GraphFillRegion::cleanup_shell_area() {
++    op_counters().node_visits += shell_area.size();
+     for (auto &detector_node : shell_area) {
+         detector_node->reset();
+     }
+@@ -76,6 +77,7 @@ void GraphFillRegion::clear_blossom_parent() {
+     blossom_parent = nullptr;
+     do_op_for_each_descendant_and_self([&](GraphFillRegion *descendant) {
+         descendant->blossom_parent_top = this;
++        op_counters().node_visits += descendant->shell_area.size();
+         for (DetectorNode *n : descendant->shell_area) {
+             n->region_that_arrived_top = this;
+             n->wrapped_radius_cached = n->compute_wrapped_radius();
+@@ -87,6 +89,7 @@ void GraphFillRegion::clear_blossom_parent_ignoring_wrapped_radius() {
+     blossom_parent = nullptr;
+     do_op_for_each_descendant_and_self([&](GraphFillRegion *descendant) {
+         descendant->blossom_parent_top = this;
++        op_counters().node_visits += descendant->shell_area.size();
+         for (DetectorNode *n : descendant->shell_area) {
+             n->region_that_arrived_top = this;
+         }
+@@ -97,6 +100,7 @@ void GraphFillRegion::wrap_into_blossom(GraphFillRegion *new_blossom_parent_and_
+     blossom_parent = new_blossom_parent_and_top;
+     do_op_for_each_descendant_and_self([&](GraphFillRegion *descendant) {
+         descendant->blossom_parent_top = new_blossom_parent_and_top;
++        op_counters().node_visits += descendant->shell_area.size();
+         for (DetectorNode *n : descendant->shell_area) {
+             n->region_that_arrived_top = new_blossom_parent_and_top;
+             n->wrapped_radius_cached = n->compute_wrapped_radius();
+@@ -107,6 +111,7 @@ void GraphFillRegion::wrap_into_blossom(GraphFillRegion *new_blossom_parent_and_
+ bool GraphFillRegion::operator<=(const GraphFillRegion &rhs) const {
+     const GraphFillRegion *r = this;
+     while (r != nullptr && r != &rhs) {
++        op_counters().region_ops++;
+         r = r->blossom_parent;
+     }
+     return r == &rhs;
+diff --git a/src/pymatching/sparse_blossom/flooder/graph_fill_region.h b/src/pymatching/sparse_blossom/flooder/graph_fill_region.h
+index df543d07..92f9906f 100644
+--- a/src/pymatching/sparse_blossom/flooder/graph_fill_region.h
++++ b/src/pymatching/sparse_blossom/flooder/graph_fill_region.h
+@@ -18,6 +18,7 @@
+ #include <vector>
+ 
+ #include "pymatching/sparse_blossom/flooder/match.h"
++#include "pymatching/sparse_blossom/op_counters.h"
+ #include "pymatching/sparse_blossom/flooder_matcher_interop/region_edge.h"
+ #include "pymatching/sparse_blossom/flooder_matcher_interop/varying.h"
+ #include "pymatching/sparse_blossom/tracker/queued_event_tracker.h"
+@@ -90,6 +91,8 @@ struct GraphFillRegion {
+ 
+ template <typename Callable>
+ inline void pm::GraphFillRegion::do_op_for_each_node_in_total_area(const Callable& func) {
++    op_counters().region_ops++;
++    op_counters().node_visits += shell_area.size();
+     for (size_t i = 0; i < shell_area.size(); i++) {
+         func(shell_area[shell_area.size() - i - 1]);
+     }
+@@ -100,6 +103,7 @@ inline void pm::GraphFillRegion::do_op_for_each_node_in_total_area(const Callabl
+ 
+ template <typename Callable>
+ inline void pm::GraphFillRegion::do_op_for_each_descendant_and_self(const Callable& func) {
++    op_counters().region_ops++;
+     func(this);
+     for (RegionEdge& child : blossom_children) {
+         child.region->do_op_for_each_descendant_and_self(func);
 diff --git a/src/pymatching/sparse_blossom/flooder/graph_flooder.cc b/src/pymatching/sparse_blossom/flooder/graph_flooder.cc
-index 9bf2afd..f0bc3f5 100644
+index 9bf2afde..65b57a0e 100644
 --- a/src/pymatching/sparse_blossom/flooder/graph_flooder.cc
 +++ b/src/pymatching/sparse_blossom/flooder/graph_flooder.cc
 @@ -13,6 +13,7 @@
@@ -102,7 +213,23 @@ index 9bf2afd..f0bc3f5 100644
  
  #include "pymatching/sparse_blossom/flooder/graph.h"
  #include "pymatching/sparse_blossom/flooder/graph_fill_region.h"
-@@ -127,6 +128,7 @@ std::pair<size_t, cumulative_time_int> GraphFlooder::find_next_event_at_node_ret
+@@ -57,6 +58,7 @@ std::pair<size_t, cumulative_time_int> find_next_event_at_node_not_occupied_by_g
+ 
+     // Handle non-boundary neighbors.
+     for (size_t i = start; i < detector_node.neighbors.size(); i++) {
++        op_counters().neighbor_scans++;
+         auto weight = detector_node.neighbor_weights[i];
+ 
+         auto neighbor = detector_node.neighbors[i];
+@@ -92,6 +94,7 @@ std::pair<size_t, cumulative_time_int> find_next_event_at_node_occupied_by_growi
+ 
+     // Handle non-boundary neighbors.
+     for (size_t i = start; i < detector_node.neighbors.size(); i++) {
++        op_counters().neighbor_scans++;
+         auto weight = detector_node.neighbor_weights[i];
+ 
+         auto neighbor = detector_node.neighbors[i];
+@@ -127,6 +130,7 @@ std::pair<size_t, cumulative_time_int> GraphFlooder::find_next_event_at_node_ret
  }
  
  void GraphFlooder::reschedule_events_at_detector_node(DetectorNode &detector_node) {
@@ -110,7 +237,15 @@ index 9bf2afd..f0bc3f5 100644
      auto x = find_next_event_at_node_returning_neighbor_index_and_time(detector_node);
      if (x.first == SIZE_MAX) {
          detector_node.node_event_tracker.set_no_desired_event();
-@@ -271,6 +273,7 @@ bool GraphFlooder::dequeue_decision(FloodCheckEvent ev) {
+@@ -238,6 +242,7 @@ GraphFillRegion *GraphFlooder::create_blossom(std::vector<RegionEdge> &contained
+     auto blossom_region = region_arena.alloc_default_constructed();
+     blossom_region->radius = VaryingCT::growing_varying_with_zero_distance_at_time(queue.cur_time);
+     blossom_region->blossom_children = std::move(contained_regions);
++    op_counters().region_ops += blossom_region->blossom_children.size();
+     for (auto &region_edge : blossom_region->blossom_children) {
+         region_edge.region->radius = region_edge.region->radius.then_frozen_at_time(queue.cur_time);
+         region_edge.region->wrap_into_blossom(blossom_region);
+@@ -271,6 +276,7 @@ bool GraphFlooder::dequeue_decision(FloodCheckEvent ev) {
  FloodCheckEvent GraphFlooder::dequeue_valid() {
      while (true) {
          FloodCheckEvent ev = queue.dequeue();
@@ -118,7 +253,7 @@ index 9bf2afd..f0bc3f5 100644
          if (dequeue_decision(ev)) {
              return ev;
          }
-@@ -369,8 +372,10 @@ MwpmEvent GraphFlooder::run_until_next_mwpm_notification() {
+@@ -369,8 +375,10 @@ MwpmEvent GraphFlooder::run_until_next_mwpm_notification() {
          if (tentative_event.tentative_event_type == NO_FLOOD_CHECK_EVENT) {
              return MwpmEvent::no_event();
          }
@@ -129,13 +264,134 @@ index 9bf2afd..f0bc3f5 100644
              return notification;
          }
      }
+diff --git a/src/pymatching/sparse_blossom/matcher/alternating_tree.cc b/src/pymatching/sparse_blossom/matcher/alternating_tree.cc
+index 24b509b9..946c3d08 100644
+--- a/src/pymatching/sparse_blossom/matcher/alternating_tree.cc
++++ b/src/pymatching/sparse_blossom/matcher/alternating_tree.cc
+@@ -38,6 +38,7 @@ bool AltTreeEdge::operator!=(const AltTreeEdge &rhs) const {
+ }
+ 
+ void AltTreeNode::add_child(const AltTreeEdge &child) {
++    op_counters().tree_ops++;
+     children.push_back(child);
+     child.alt_tree_node->parent = {this, child.edge.reversed()};
+ }
+@@ -83,6 +84,7 @@ const AltTreeNode *AltTreeNode::find_root() const {
+ 
+ void AltTreeNode::become_root() {
+     // Performs a tree rotation turning this node into the root of the tree/
++    op_counters().tree_ops++;
+     if (!parent.alt_tree_node)
+         return;
+     auto old_parent = parent.alt_tree_node;
+@@ -144,6 +146,7 @@ AltTreeNode *AltTreeNode::most_recent_common_ancestor(AltTreeNode &other) {
+     AltTreeNode *other_parent;
+     AltTreeNode *common_ancestor;
+     while (true) {
++        op_counters().tree_ops++;
+         this_parent = this_current->parent.alt_tree_node;
+         other_parent = other_current->parent.alt_tree_node;
+         if (this_parent || other_parent) {
+@@ -171,6 +174,7 @@ AltTreeNode *AltTreeNode::most_recent_common_ancestor(AltTreeNode &other) {
+     common_ancestor->visited = false;
+     this_parent = common_ancestor->parent.alt_tree_node;
+     while (this_parent && this_parent->visited) {
++        op_counters().tree_ops++;
+         this_parent->visited = false;
+         this_parent = this_parent->parent.alt_tree_node;
+     }
+@@ -191,6 +195,7 @@ AltTreePruneResult AltTreeNode::prune_upward_path_stopping_before(
+         pruned_path_region_edges.reserve(3);
+     // Assumes prune_parent is an ancestor
+     while (current_node != prune_parent) {
++        op_counters().tree_ops++;
+         move_append(current_node->children, orphan_edges);
+         if (back) {
+             pruned_path_region_edges.push_back({current_node->inner_region, current_node->inner_to_outer_edge});
+diff --git a/src/pymatching/sparse_blossom/matcher/alternating_tree.h b/src/pymatching/sparse_blossom/matcher/alternating_tree.h
+index 4d9fa52f..92232d57 100644
+--- a/src/pymatching/sparse_blossom/matcher/alternating_tree.h
++++ b/src/pymatching/sparse_blossom/matcher/alternating_tree.h
+@@ -18,6 +18,7 @@
+ #include <vector>
+ 
+ #include "pymatching/sparse_blossom/arena.h"
++#include "pymatching/sparse_blossom/op_counters.h"
+ #include "pymatching/sparse_blossom/flooder_matcher_interop/region_edge.h"
+ 
+ namespace pm {
+@@ -42,6 +43,7 @@ bool unstable_erase(std::vector<T>& vec, UnaryPredicate pred);
+ 
+ template <class T, class UnaryPredicate>
+ inline bool unstable_erase(std::vector<T>& vec, UnaryPredicate pred) {
++    pm::op_counters().tree_ops += vec.size();  // upper bound on elements scanned
+     auto res = std::find_if(vec.begin(), vec.end(), pred);
+     if (res == vec.end())
+         return false;
+@@ -56,6 +58,7 @@ inline bool unstable_erase(std::vector<T>& vec, UnaryPredicate pred) {
+ 
+ template <typename T>
+ void move_append(std::vector<T>& src, std::vector<T>& dst) {
++    pm::op_counters().tree_ops += src.size();
+     if (dst.empty()) {
+         dst = std::move(src);
+     } else {
+diff --git a/src/pymatching/sparse_blossom/matcher/mwpm.cc b/src/pymatching/sparse_blossom/matcher/mwpm.cc
+index 2dd73143..27c26cc3 100644
+--- a/src/pymatching/sparse_blossom/matcher/mwpm.cc
++++ b/src/pymatching/sparse_blossom/matcher/mwpm.cc
+@@ -43,6 +43,7 @@ Mwpm::Mwpm(Mwpm &&other) noexcept
+ }
+ 
+ void Mwpm::shatter_descendants_into_matches_and_freeze(AltTreeNode &alt_tree_node) {
++    op_counters().tree_ops++;
+     for (auto &child_edge : alt_tree_node.children) {
+         shatter_descendants_into_matches_and_freeze(*child_edge.alt_tree_node);
+     }
+@@ -138,6 +139,7 @@ void Mwpm::handle_tree_hitting_self(const RegionHitRegionEventData &event, AltTr
+     // Construct blossom region cycle
+     auto blossom_cycle = std::move(prune_result_2.pruned_path_region_edges);
+     auto p1s = prune_result_1.pruned_path_region_edges.size();
++    op_counters().region_ops += blossom_cycle.size() + p1s + 1;
+     blossom_cycle.reserve(blossom_cycle.size() + p1s + 1);
+     for (size_t i = 0; i < p1s; i++)
+         blossom_cycle.push_back(prune_result_1.pruned_path_region_edges[p1s - i - 1]);
+@@ -158,6 +160,8 @@ void Mwpm::handle_tree_hitting_self(const RegionHitRegionEventData &event, AltTr
+ }
+ 
+ void Mwpm::handle_blossom_shattering(const BlossomShatterEventData &event) {
++    // unparenting loop, index scan, and the tree-path / matched-path loops over the cycle
++    op_counters().region_ops += 3 * event.blossom_region->blossom_children.size();
+     for (auto &child : event.blossom_region->blossom_children) {
+         child.region->clear_blossom_parent();
+     }
+@@ -301,6 +305,8 @@ void Mwpm::process_event(const MwpmEvent &event) {
+ }
+ 
+ GraphFillRegion *Mwpm::pair_and_shatter_subblossoms_and_extract_matches(GraphFillRegion *region, MatchingResult &res) {
++    // unparenting loop, find_if scan and pairing loop over the blossom cycle
++    op_counters().extract_ops += 3 * region->blossom_children.size();
+     for (auto &r : region->blossom_children) {
+         r.region->clear_blossom_parent_ignoring_wrapped_radius();
+     }
+@@ -326,6 +332,7 @@ GraphFillRegion *Mwpm::pair_and_shatter_subblossoms_and_extract_matches(GraphFil
+ }
+ 
+ MatchingResult Mwpm::shatter_blossom_and_extract_matches(GraphFillRegion *region) {
++    op_counters().extract_ops++;
+     region->cleanup_shell_area();
+ 
+     // First handle base cases (no subblossoms)
 diff --git a/src/pymatching/sparse_blossom/op_counters.h b/src/pymatching/sparse_blossom/op_counters.h
 new file mode 100644
-index 0000000..a708744
+index 00000000..0664dd5b
 --- /dev/null
 +++ b/src/pymatching/sparse_blossom/op_counters.h
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,38 @@
 +// synbuf instrumentation: elementary-operation counters for Sparse Blossom.
++//
++// Every counter counts operations of bounded cost (O(1), or O(max node degree)), so the total decode
++// time is within constant factors of their sum.
 +#ifndef PYMATCHING2_OP_COUNTERS_H
 +#define PYMATCHING2_OP_COUNTERS_H
 +
@@ -144,11 +400,21 @@ index 0000000..a708744
 +namespace pm {
 +
 +struct OpCounters {
++    // dual (flooder)
 +    uint64_t pq_pops = 0;          // every priority-queue dequeue (incl. stale/invalidated events)
++    uint64_t queue_moves = 0;      // radix-heap bucket refills: events scanned for the minimum + events moved
 +    uint64_t flood_events = 0;     // valid tentative flooder events processed
-+    uint64_t mwpm_events = 0;      // notifications handed to the matcher (region/boundary hits, blossom ops)
-+    uint64_t node_reschedules = 0; // detector-node rescheduling operations (region growth/shrink/blossom bookkeeping)
-+    uint64_t shatter_ops = 0;      // match-extraction work (blossom shattering calls)
++    uint64_t node_reschedules = 0; // detector-node rescheduling operations (each scans <= degree neighbors)
++    uint64_t neighbor_scans = 0;   // neighbor iterations inside node rescheduling
++    // primal (matcher)
++    uint64_t mwpm_events = 0;      // notifications handed to the matcher (region/boundary hits, blossom shatter)
++    uint64_t tree_ops = 0;         // alternating-tree node visits and child-list element operations
++    uint64_t region_ops = 0;       // region visits (blossom recursion, blossom cycles, blossom-parent chain steps)
++    uint64_t node_visits = 0;      // detector-node visits by region-wide operations (growth-rate changes, blossom
++                                   // wrapping/unwrapping, shell cleanup)
++    // match extraction
++    uint64_t shatter_ops = 0;      // top-level extraction calls (one per detection event still owned by a region)
++    uint64_t extract_ops = 0;      // recursive extraction steps (shatter calls, blossom-child pairing/scans)
 +    void reset() { *this = OpCounters(); }
 +};
 +
@@ -160,3 +426,23 @@ index 0000000..a708744
 +}  // namespace pm
 +
 +#endif
+diff --git a/src/pymatching/sparse_blossom/tracker/radix_heap_queue.h b/src/pymatching/sparse_blossom/tracker/radix_heap_queue.h
+index 70877eb3..99ba635b 100644
+--- a/src/pymatching/sparse_blossom/tracker/radix_heap_queue.h
++++ b/src/pymatching/sparse_blossom/tracker/radix_heap_queue.h
+@@ -23,6 +23,7 @@
+ #include <vector>
+ 
+ #include "pymatching/sparse_blossom/ints.h"
++#include "pymatching/sparse_blossom/op_counters.h"
+ #include "pymatching/sparse_blossom/tracker/cyclic.h"
+ #include "pymatching/sparse_blossom/tracker/flood_check_event.h"
+ 
+@@ -141,6 +142,7 @@ struct radix_heap_queue {
+ 
+                 // Advance time to the minimum time in the bucket.
+                 decltype(cyclic_time_int::value) min_time = source_bucket[0].time.value;
++                op_counters().queue_moves += 2 * source_bucket.size();  // min scan + redistribution
+                 for (size_t k = 1; k < source_bucket.size(); k++) {
+                     min_time = std::min(min_time, source_bucket[k].time.value);
+                 }

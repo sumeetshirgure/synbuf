@@ -14,5 +14,10 @@
     "tag": "v2.13.6",
     "commit": "a2e59f0e7065404b44dfe92a28aca47ba1378dc4",
     "patch": null
+  },
+  "ldpc": {
+    "repo": "https://github.com/quantumgizmos/ldpc",
+    "commit": "d3429964cd4ffe1abfc041c6ec8b8425cb174f40",
+    "patch": "third_party/ldpc_uf_op_counters.patch"
   }
 }
