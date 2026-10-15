@@ -12,7 +12,7 @@ export PYTHONPATH=.
 N="${1:?usage: scripts/pipeline.sh N [mwpm|tune|relay|nconv5|uf ...]}"
 shift
 STAGES="${*:-mwpm tune relay nconv5 uf}"
-PS="0.0005 0.001 0.003"
+PS="0.001 0.003"
 SHOTS=1000000
 mkdir -p logs
 
